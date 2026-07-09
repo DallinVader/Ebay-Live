@@ -98,6 +98,11 @@
     let effectHotkey = 'Space';
     let isCapturingHotkey = false;
     let effectIdCounter = 0;
+    const sessionHiddenFolderMedia = {
+        Images: new Set(),
+        Sound: new Set(),
+        Music: new Set(),
+    };
     let lastPlayedSoundId = null;
     let consecutiveSameSoundCount = 0;
 
@@ -897,7 +902,9 @@
 
     function removeMusicTrack(id) {
         const track = musicTracks.find((item) => item.id === id);
-        if (track && !track.isDefault) {
+        if (track?.isDefault) {
+            hideFolderMediaItem('Music', track.name);
+        } else if (track) {
             URL.revokeObjectURL(track.url);
         }
 
@@ -917,7 +924,9 @@
         }
 
         musicTracks.forEach((track) => {
-            if (!track.isDefault) {
+            if (track.isDefault) {
+                hideFolderMediaItem('Music', track.name);
+            } else {
                 URL.revokeObjectURL(track.url);
             }
         });
@@ -1252,18 +1261,27 @@
         return index;
     }
 
+    function hideFolderMediaItem(folderName, fileName) {
+        sessionHiddenFolderMedia[folderName].add(fileName);
+    }
+
+    function filterVisibleFolderFiles(folderName, files) {
+        const hidden = sessionHiddenFolderMedia[folderName];
+        return files.filter((name) => !hidden.has(name));
+    }
+
     function applyFolderMedia(index) {
-        const folderImages = mapFolderFiles('Images', index.Images);
+        const folderImages = mapFolderFiles('Images', filterVisibleFolderFiles('Images', index.Images));
         const uploadedImages = effectImages.filter((image) => !image.isDefault);
         effectImages = [...folderImages, ...uploadedImages];
         renderEffectImageList();
 
-        const folderSounds = mapFolderFiles('Sound', index.Sound);
+        const folderSounds = mapFolderFiles('Sound', filterVisibleFolderFiles('Sound', index.Sound));
         const uploadedSounds = effectSounds.filter((sound) => !sound.isDefault);
         effectSounds = [...folderSounds, ...uploadedSounds];
         renderEffectSoundList();
 
-        const folderTracks = mapFolderFiles('Music', index.Music);
+        const folderTracks = mapFolderFiles('Music', filterVisibleFolderFiles('Music', index.Music));
         const uploadedTracks = musicTracks.filter((track) => !track.isDefault);
         musicTracks = [...folderTracks, ...uploadedTracks];
         renderMusicList();
@@ -1317,7 +1335,9 @@
 
     function clearEffectImages() {
         effectImages.forEach((image) => {
-            if (!image.isDefault) {
+            if (image.isDefault) {
+                hideFolderMediaItem('Images', image.name);
+            } else {
                 URL.revokeObjectURL(image.url);
             }
         });
@@ -1351,7 +1371,9 @@
 
     function removeEffectImage(id) {
         const image = effectImages.find((item) => item.id === id);
-        if (image && !image.isDefault) {
+        if (image?.isDefault) {
+            hideFolderMediaItem('Images', image.name);
+        } else if (image) {
             URL.revokeObjectURL(image.url);
         }
 
@@ -1379,7 +1401,9 @@
 
     function clearEffectSounds() {
         effectSounds.forEach((sound) => {
-            if (!sound.isDefault) {
+            if (sound.isDefault) {
+                hideFolderMediaItem('Sound', sound.name);
+            } else {
                 URL.revokeObjectURL(sound.url);
             }
         });
@@ -1414,7 +1438,9 @@
 
     function removeEffectSound(id) {
         const sound = effectSounds.find((item) => item.id === id);
-        if (sound && !sound.isDefault) {
+        if (sound?.isDefault) {
+            hideFolderMediaItem('Sound', sound.name);
+        } else if (sound) {
             URL.revokeObjectURL(sound.url);
         }
 
