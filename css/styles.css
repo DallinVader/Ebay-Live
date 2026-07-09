@@ -306,7 +306,28 @@ body {
 
 .field-hint {
     margin-top: 0.35rem;
+    color: var(--text-secondary);
+}
+
+.stream-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.65rem;
+    margin-top: 0.75rem;
+}
+
+.stream-output-status {
+    margin-top: 0.75rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.stream-output-status.is-live {
     color: var(--success);
+}
+
+.stream-output-status.is-error {
+    color: var(--accent);
 }
 
 .setting-group {
@@ -329,6 +350,9 @@ body {
 }
 
 select,
+input[type="text"],
+input[type="password"],
+input[type="url"],
 input[type="file"] {
     width: 100%;
     padding: 0.55rem 0.75rem;
@@ -337,10 +361,17 @@ input[type="file"] {
     border-radius: 6px;
     color: var(--text-primary);
     font-size: 0.875rem;
+}
+
+select,
+input[type="file"] {
     cursor: pointer;
 }
 
 select:focus,
+input[type="text"]:focus,
+input[type="password"]:focus,
+input[type="url"]:focus,
 input[type="file"]:focus {
     outline: 2px solid var(--accent);
     outline-offset: 1px;

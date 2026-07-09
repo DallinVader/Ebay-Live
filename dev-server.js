@@ -1,4 +1,5 @@
 const http = require('http');
+const { attachStreamRelay, getFfmpegStatus } = require('./scripts/stream-relay');
 const fs = require('fs');
 const path = require('path');
 
@@ -135,12 +136,30 @@ const server = http.createServer((req, res) => {
         return;
     }
 
+    if (url.pathname === '/api/stream-capabilities') {
+        let relayAvailable = false;
+
+        try {
+            require.resolve('ws');
+            relayAvailable = true;
+        } catch {
+            relayAvailable = false;
+        }
+
+        sendJson(res, 200, {
+            relayAvailable,
+            ...getFfmpegStatus(),
+        });
+        return;
+    }
+
     serveStatic(req, res);
 });
 
 server.listen(PORT, () => {
     writeMediaIndexFile();
     startFolderWatchers();
+    attachStreamRelay(server);
     console.log(`eBay Live dev server running at http://localhost:${PORT}`);
     console.log('Live media index: /media-index.json and /api/media-index');
     console.log('Folder listing API: /api/list/Images, /api/list/Sound, and /api/list/Music');

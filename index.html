@@ -135,6 +135,37 @@
                         </label>
                     </div>
 
+                    <div class="setting-subsection">
+                        <h3>eBay Live stream</h3>
+
+                        <div class="setting-group">
+                            <label for="stream-protocol">Ingest protocol</label>
+                            <select id="stream-protocol">
+                                <option value="whip" selected>WHIP — low latency (best for live auctions)</option>
+                                <option value="rtmp">RTMP — reliable (via local FFmpeg relay)</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-group">
+                            <label for="stream-url">Stream URL</label>
+                            <input type="text" id="stream-url" placeholder="https://stream.us.shoplive.cloud:4334/stream" autocomplete="off" spellcheck="false">
+                        </div>
+
+                        <div class="setting-group">
+                            <label for="stream-key">Stream key</label>
+                            <input type="password" id="stream-key" placeholder="Paste key from eBay Live" autocomplete="off" spellcheck="false">
+                        </div>
+
+                        <p class="field-hint" id="stream-protocol-hint">WHIP streams directly from your browser to eBay with minimal delay — no FFmpeg or dev server needed. Use the HTTPS ingest URL and key from Seller Hub.</p>
+
+                        <div class="stream-actions">
+                            <button id="stream-start-btn" type="button" class="btn btn-primary">Start streaming</button>
+                            <button id="stream-stop-btn" type="button" class="btn btn-ghost" disabled>Stop streaming</button>
+                        </div>
+
+                        <p id="stream-output-status" class="stream-output-status">Ready to stream</p>
+                    </div>
+
                     <div class="setting-row">
                         <label class="toggle-label" for="show-overlay-toggle">
                             <input type="checkbox" id="show-overlay-toggle" checked>

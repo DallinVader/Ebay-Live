@@ -37,6 +37,13 @@
         showOverlayToggle: document.getElementById('show-overlay-toggle'),
         fullscreenBtn: document.getElementById('fullscreen-btn'),
         streamStatus: document.getElementById('stream-status'),
+        streamUrl: document.getElementById('stream-url'),
+        streamKey: document.getElementById('stream-key'),
+        streamProtocol: document.getElementById('stream-protocol'),
+        streamProtocolHint: document.getElementById('stream-protocol-hint'),
+        streamStartBtn: document.getElementById('stream-start-btn'),
+        streamStopBtn: document.getElementById('stream-stop-btn'),
+        streamOutputStatus: document.getElementById('stream-output-status'),
         cameraError: document.getElementById('camera-error'),
         liveOverlay: document.getElementById('live-overlay'),
         musicUpload: document.getElementById('music-upload'),
@@ -127,6 +134,11 @@
     const EFFECT_SETTINGS_KEY = 'ebayLiveEffectSettings';
     const MUSIC_SETTINGS_KEY = 'ebayLiveMusicSettings';
     const STREAM_SETTINGS_KEY = 'ebayLiveStreamSettings';
+    const STREAM_OUTPUT_SETTINGS_KEY = 'ebayLiveStreamOutputSettings';
+    const STREAM_CANVAS_WIDTH = 1080;
+    const STREAM_CANVAS_HEIGHT = 1920;
+    const STREAM_OUTPUT_WIDTH = 720;
+    const STREAM_OUTPUT_HEIGHT = 1280;
     const REPO_CONFIG = { owner: 'DallinVader', repo: 'Ebay-Live' };
 
     function resolveAppBasePath() {
@@ -179,10 +191,1306 @@
         ArrowRight: '→',
     };
 
+    let streamCanvas = null;
+    let streamCompositorState = null;
+    let streamAnimationId = null;
+    let streamFrameInterval = null;
+    let streamFrameLoopId = null;
+    let streamJpegEncoding = false;
+    let streamAudioProcessor = null;
+    let streamRecorder = null;
+    let streamCaptureMode = 'webm';
+    let streamSocket = null;
+    let whipPeerConnection = null;
+    let whipSessionUrl = null;
+    let streamPublishVideoTrack = null;
+    let streamCanvasCaptureStream = null;
+    let streamPublishAudioDest = null;
+    let whipFrameTimer = null;
+    let streamMicTrack = null;
+    let micMonitorTrackId = null;
+    let streamAudioMixActive = false;
+    let streamMixGainNode = null;
+    let streamMicMixGain = null;
+    let streamMicMixSource = null;
+    let streamMixMicTrack = null;
+    let musicMediaSource = null;
+    let musicStreamGain = null;
+    let musicMonitorGain = null;
+    let streamSfxGain = null;
+    const effectSoundBufferCache = new Map();
+    let streamRelayAvailable = false;
+    let ffmpegAvailable = false;
+    let isOutputStreaming = false;
+
     function setStatus(live) {
         elements.streamStatus.textContent = live ? 'Live' : 'Ready';
         elements.streamStatus.classList.toggle('status-live', live);
         elements.streamStatus.classList.toggle('status-idle', !live);
+    }
+
+    function updateStreamOutputStatus(message, state = '') {
+        elements.streamOutputStatus.textContent = message;
+        elements.streamOutputStatus.classList.remove('is-live', 'is-error');
+        if (state) {
+            elements.streamOutputStatus.classList.add(state);
+        }
+    }
+
+    function setOutputStreamingState(live) {
+        isOutputStreaming = live;
+        elements.streamStartBtn.disabled = live;
+        elements.streamStopBtn.disabled = !live;
+        setStatus(live);
+    }
+
+    function formatStreamError(error) {
+        const message = error?.message || String(error);
+
+        if (message.includes('stream relay') || message.includes('WebSocket')) {
+            return 'Stream relay unavailable. Run npm install, then node dev-server.js, and open this page from localhost.';
+        }
+
+        if (message.includes('WHIP') || message.includes('Failed to fetch')) {
+            return 'WHIP connection failed. Check your HTTPS URL and key from eBay Live, and confirm Seller Hub shows the WHIP ingest option.';
+        }
+
+        return message;
+    }
+
+    function getStreamRelayUrl() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        return `${protocol}//${window.location.host}/ws/stream`;
+    }
+
+    async function checkStreamRelayAvailable() {
+        try {
+            const response = await fetch(appPath('api/stream-capabilities'));
+            if (!response.ok) {
+                streamRelayAvailable = false;
+                ffmpegAvailable = false;
+                return false;
+            }
+
+            const data = await response.json();
+            streamRelayAvailable = Boolean(data.relayAvailable);
+            ffmpegAvailable = Boolean(data.ffmpegAvailable);
+            return streamRelayAvailable && ffmpegAvailable;
+        } catch {
+            streamRelayAvailable = false;
+            ffmpegAvailable = false;
+            return false;
+        }
+    }
+
+    function getActiveStreamElements() {
+        if (isFullscreen) {
+            return {
+                mainVideo: elements.cameraFullscreen,
+                overlayVideo: elements.cameraOverlayFullscreen,
+                overlayWrap: elements.fullscreenOverlayWrap,
+                effectLayer: elements.fullscreenEffectLayer,
+            };
+        }
+
+        return {
+            mainVideo: elements.cameraPreview,
+            overlayVideo: elements.cameraOverlayPreview,
+            overlayWrap: elements.previewOverlayWrap,
+            effectLayer: elements.previewEffectLayer,
+        };
+    }
+
+    function refreshStreamCompositorSources() {
+        if (!streamCompositorState) {
+            return;
+        }
+
+        const sources = getActiveStreamElements();
+        streamCompositorState.mainVideo = sources.mainVideo;
+        streamCompositorState.overlayVideo = sources.overlayVideo;
+        streamCompositorState.overlayWrap = sources.overlayWrap;
+        streamCompositorState.effectLayer = sources.effectLayer;
+    }
+
+    function getStreamEffectLayers() {
+        return [getActiveStreamElements().effectLayer];
+    }
+
+    function waitForVideoReady(video) {
+        if (video.readyState >= 2 && video.videoWidth > 0) {
+            return Promise.resolve();
+        }
+
+        return new Promise((resolve) => {
+            const done = () => resolve();
+            video.addEventListener('loadeddata', done, { once: true });
+            video.addEventListener('playing', done, { once: true });
+            window.setTimeout(done, 1000);
+        });
+    }
+
+    function waitForAnimationFrames(count) {
+        return new Promise((resolve) => {
+            const step = () => {
+                count -= 1;
+                if (count <= 0) {
+                    resolve();
+                    return;
+                }
+
+                requestAnimationFrame(step);
+            };
+
+            requestAnimationFrame(step);
+        });
+    }
+
+    function createSilentAudioTrack() {
+        if (!audioContext) {
+            audioContext = new AudioContext();
+        }
+
+        const destination = audioContext.createMediaStreamDestination();
+        const oscillator = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+
+        gain.gain.value = 0;
+        oscillator.connect(gain);
+        gain.connect(destination);
+        oscillator.start();
+
+        return destination.stream.getAudioTracks()[0];
+    }
+
+    function drawVideoCover(ctx, video, x, y, width, height, mirrored) {
+        if (video.readyState < 2 || !video.videoWidth) {
+            return;
+        }
+
+        const sourceAspect = video.videoWidth / video.videoHeight;
+        const targetAspect = width / height;
+        let drawWidth = width;
+        let drawHeight = height;
+        let drawX = x;
+        let drawY = y;
+
+        if (sourceAspect > targetAspect) {
+            drawWidth = height * sourceAspect;
+            drawX = x - (drawWidth - width) / 2;
+        } else {
+            drawHeight = width / sourceAspect;
+            drawY = y - (drawHeight - height) / 2;
+        }
+
+        ctx.save();
+        if (mirrored) {
+            ctx.translate(x + width, y);
+            ctx.scale(-1, 1);
+            ctx.drawImage(video, x, drawY, drawWidth, drawHeight);
+        } else {
+            ctx.drawImage(video, drawX, drawY, drawWidth, drawHeight);
+        }
+        ctx.restore();
+    }
+
+    function drawCompositorEffects(ctx, effectLayer, width, height) {
+        effectLayer.querySelectorAll('.bat-effect').forEach((effect) => {
+            const x = (parseFloat(effect.style.getPropertyValue('--effect-x')) || 50) / 100;
+            const y = (parseFloat(effect.style.getPropertyValue('--effect-y')) || 50) / 100;
+            const size = (parseFloat(effect.style.getPropertyValue('--effect-size')) || 20) / 100;
+            const drawWidth = width * size;
+            const drawHeight = drawWidth * (effect.naturalHeight / effect.naturalWidth || 1);
+            const drawX = x * width - drawWidth / 2;
+            const drawY = y * height - drawHeight / 2;
+
+            if (effect.complete && effect.naturalWidth) {
+                ctx.drawImage(effect, drawX, drawY, drawWidth, drawHeight);
+            }
+        });
+    }
+
+    function drawCompositorFrame() {
+        if (!streamCompositorState) {
+            return;
+        }
+
+        if (isOutputStreaming) {
+            refreshStreamCompositorSources();
+        }
+
+        const {
+            ctx,
+            width,
+            height,
+            mainVideo,
+            overlayVideo,
+            overlayWrap,
+        } = streamCompositorState;
+
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, width, height);
+
+        const splitLayout = isSplitOverlayLayout() && !overlayWrap.classList.contains('hidden');
+        const mainMirrored = mainVideo.classList.contains('mirrored');
+        const overlayMirrored = overlayVideo.classList.contains('mirrored');
+
+        if (splitLayout) {
+            drawVideoCover(ctx, mainVideo, 0, 0, width, height / 2, mainMirrored);
+            if (overlayVideo.readyState >= 2) {
+                drawVideoCover(ctx, overlayVideo, 0, height / 2, width, height / 2, overlayMirrored);
+            }
+        } else {
+            drawVideoCover(ctx, mainVideo, 0, 0, width, height, mainMirrored);
+
+            if (!overlayWrap.classList.contains('hidden') && overlayVideo.readyState >= 2) {
+                const overlayWidth = width * (parseFloat(getComputedStyle(overlayWrap).getPropertyValue('--overlay-size')) / 100 || 0.25);
+                const aspect = getComputedStyle(overlayWrap).getPropertyValue('--overlay-aspect-ratio').trim() || '9 / 16';
+                const [aspectW, aspectH] = aspect.split('/').map((value) => Number(value.trim()));
+                const overlayHeight = overlayWidth * ((aspectH || 16) / (aspectW || 9));
+                const overlayX = width * (overlayPosition.x / 100) - overlayWidth / 2;
+                const overlayY = height * (overlayPosition.y / 100) - overlayHeight / 2;
+
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(overlayX, overlayY, overlayWidth, overlayHeight);
+                ctx.clip();
+                drawVideoCover(ctx, overlayVideo, overlayX, overlayY, overlayWidth, overlayHeight, overlayMirrored);
+                ctx.restore();
+            }
+        }
+
+        getStreamEffectLayers().forEach((layer) => {
+            drawCompositorEffects(ctx, layer, width, height);
+        });
+    }
+
+    function startCompositorLoop() {
+        const render = () => {
+            drawCompositorFrame();
+            streamAnimationId = requestAnimationFrame(render);
+        };
+
+        render();
+    }
+
+    function stopCompositorLoop() {
+        if (streamAnimationId) {
+            cancelAnimationFrame(streamAnimationId);
+            streamAnimationId = null;
+        }
+
+        streamCompositorState = null;
+    }
+
+    async function prepareStreamCompositor(highResolution = false) {
+        const { mainVideo, overlayVideo, overlayWrap, effectLayer } = getActiveStreamElements();
+
+        if (mainVideo.srcObject) {
+            await waitForVideoReady(mainVideo);
+        }
+
+        if (!overlayWrap.classList.contains('hidden') && overlayVideo.srcObject) {
+            await waitForVideoReady(overlayVideo);
+        }
+
+        if (!streamCanvas) {
+            streamCanvas = document.createElement('canvas');
+        }
+
+        const outputWidth = highResolution ? STREAM_CANVAS_WIDTH : STREAM_OUTPUT_WIDTH;
+        const outputHeight = highResolution ? STREAM_CANVAS_HEIGHT : STREAM_OUTPUT_HEIGHT;
+
+        streamCanvas.width = outputWidth;
+        streamCanvas.height = outputHeight;
+        attachStreamCanvasToDom();
+
+        const ctx = streamCanvas.getContext('2d');
+
+        streamCompositorState = {
+            ctx,
+            width: outputWidth,
+            height: outputHeight,
+            mainVideo,
+            overlayVideo,
+            overlayWrap,
+            effectLayer,
+        };
+
+        startCompositorLoop();
+        drawCompositorFrame();
+        await waitForAnimationFrames(3);
+    }
+
+    async function buildPublishStream() {
+        if (!streamCanvas) {
+            throw new Error('Stream compositor not ready.');
+        }
+
+        await warmUpStreamCompositor();
+        const canvasStream = getCanvasCaptureStream();
+        const publishTracks = [...canvasStream.getVideoTracks()];
+        await attachPublishAudioTrack(publishTracks);
+
+        return new MediaStream(publishTracks);
+    }
+
+    function getRecorderMimeType() {
+        const candidates = [
+            'video/webm;codecs=vp8,opus',
+            'video/webm;codecs=vp8',
+            'video/webm;codecs=vp9,opus',
+            'video/webm',
+        ];
+
+        return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || '';
+    }
+
+    function getStreamCaptureMode() {
+        return 'jpeg';
+    }
+
+    const STREAM_SOCKET_BUFFER_LIMIT = 524288;
+
+    function attachStreamCanvasToDom() {
+        if (!streamCanvas) {
+            return;
+        }
+
+        streamCanvas.style.cssText = [
+            'position:fixed',
+            `width:${streamCanvas.width}px`,
+            `height:${streamCanvas.height}px`,
+            'top:0',
+            'left:0',
+            'opacity:0.01',
+            'pointer-events:none',
+            'z-index:-1',
+        ].join(';');
+
+        if (!streamCanvas.parentNode) {
+            document.body.appendChild(streamCanvas);
+        }
+    }
+
+    function clearStreamCanvasCapture() {
+        streamPublishVideoTrack = null;
+        streamCanvasCaptureStream = null;
+        stopWhipFramePump();
+    }
+
+    function getMicDeviceId() {
+        return elements.micSelect.value
+            || getSelectedMicId(elements.cameraSelect.value)
+            || micDevices[0]?.deviceId
+            || null;
+    }
+
+    function getMicAudioConstraints(micId) {
+        const base = {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+        };
+
+        if (micId) {
+            return { ...base, deviceId: { ideal: micId } };
+        }
+
+        return base;
+    }
+
+    function getLiveMicrophoneTrack() {
+        const mediaTrack = mediaStream?.getAudioTracks().find((track) => track.readyState === 'live');
+        if (mediaTrack) {
+            return mediaTrack;
+        }
+
+        if (streamMicTrack?.readyState === 'live') {
+            return streamMicTrack;
+        }
+
+        return null;
+    }
+
+    async function acquireStreamMicrophoneTrack(skipMonitor = false) {
+        const existingTrack = getLiveMicrophoneTrack();
+        if (existingTrack) {
+            if (!skipMonitor) {
+                if (typeof existingTrack.clone === 'function') {
+                    setupMicAudio(existingTrack.clone());
+                }
+            }
+            return existingTrack;
+        }
+
+        if (!navigator.mediaDevices?.getUserMedia) {
+            return null;
+        }
+
+        try {
+            const micStream = await navigator.mediaDevices.getUserMedia({
+                audio: getMicAudioConstraints(getMicDeviceId()),
+            });
+            streamMicTrack = micStream.getAudioTracks()[0] || null;
+
+            if (streamMicTrack && !skipMonitor && typeof streamMicTrack.clone === 'function') {
+                setupMicAudio(streamMicTrack.clone());
+            }
+
+            return streamMicTrack;
+        } catch (error) {
+            console.error('Microphone acquire failed:', error);
+            elements.micStatus.textContent = 'Mic denied';
+            return null;
+        }
+    }
+
+    function releaseStreamMicTrack() {
+        if (streamMicTrack && !mediaStream?.getAudioTracks().includes(streamMicTrack)) {
+            streamMicTrack.stop();
+        }
+
+        streamMicTrack = null;
+        micMonitorTrackId = null;
+    }
+
+    function disconnectPublishAudio() {
+        streamPublishAudioDest = null;
+    }
+
+    async function ensureStreamAudioContext() {
+        if (!audioContext || audioContext.state === 'closed') {
+            audioContext = new AudioContext();
+        }
+
+        if (audioContext.state === 'suspended') {
+            await audioContext.resume();
+        }
+    }
+
+    function ensureMusicAudioRouting() {
+        if (musicMediaSource) {
+            return;
+        }
+
+        musicMediaSource = audioContext.createMediaElementSource(elements.musicPlayer);
+        musicStreamGain = audioContext.createGain();
+        musicMonitorGain = audioContext.createGain();
+        musicMediaSource.connect(musicStreamGain);
+        musicMediaSource.connect(musicMonitorGain);
+        musicMonitorGain.connect(audioContext.destination);
+        elements.musicPlayer.volume = 1;
+    }
+
+    function updateMusicStreamGains() {
+        const volume = elements.musicVolume.value / 100;
+        elements.musicVolumeValue.textContent = `${elements.musicVolume.value}%`;
+
+        if (musicMediaSource) {
+            elements.musicPlayer.volume = 1;
+            if (musicMonitorGain) {
+                musicMonitorGain.gain.value = volume;
+            }
+            if (musicStreamGain) {
+                musicStreamGain.gain.value = streamAudioMixActive ? volume : 0;
+            }
+            return;
+        }
+
+        elements.musicPlayer.volume = volume;
+    }
+
+    function teardownStreamAudioMix() {
+        streamAudioMixActive = false;
+
+        if (musicStreamGain && streamMixGainNode) {
+            try {
+                musicStreamGain.disconnect(streamMixGainNode);
+            } catch {
+                // Already disconnected.
+            }
+        }
+
+        if (streamMicMixSource) {
+            try {
+                streamMicMixSource.disconnect();
+            } catch {
+                // Already disconnected.
+            }
+            streamMicMixSource = null;
+        }
+
+        if (streamMicMixGain) {
+            try {
+                streamMicMixGain.disconnect();
+            } catch {
+                // Already disconnected.
+            }
+            streamMicMixGain = null;
+        }
+
+        if (streamMixMicTrack) {
+            streamMixMicTrack.stop();
+            streamMixMicTrack = null;
+        }
+
+        if (streamSfxGain) {
+            try {
+                streamSfxGain.disconnect();
+            } catch {
+                // Already disconnected.
+            }
+            streamSfxGain = null;
+        }
+
+        if (streamMixGainNode) {
+            try {
+                streamMixGainNode.disconnect();
+            } catch {
+                // Already disconnected.
+            }
+            streamMixGainNode = null;
+        }
+
+        streamPublishAudioDest = null;
+        updateMusicStreamGains();
+    }
+
+    async function setupStreamAudioMix() {
+        await ensureStreamAudioContext();
+        teardownStreamAudioMix();
+        ensureMusicAudioRouting();
+
+        streamPublishAudioDest = audioContext.createMediaStreamDestination();
+        streamMixGainNode = audioContext.createGain();
+        streamMixGainNode.gain.value = 1;
+        streamMixGainNode.connect(streamPublishAudioDest);
+
+        streamSfxGain = audioContext.createGain();
+        streamSfxGain.gain.value = elements.effectSfxVolume.value / 100;
+        streamSfxGain.connect(streamMixGainNode);
+
+        const micTrack = await acquireStreamMicrophoneTrack(true);
+        if (micTrack) {
+            const publishMic = typeof micTrack.clone === 'function' ? micTrack.clone() : micTrack;
+            if (publishMic !== micTrack) {
+                streamMixMicTrack = publishMic;
+            }
+
+            streamMicMixSource = audioContext.createMediaStreamSource(new MediaStream([publishMic]));
+            streamMicMixGain = audioContext.createGain();
+            streamMicMixGain.gain.value = elements.micVolume.value / 100;
+            streamMicMixSource.connect(streamMicMixGain);
+            streamMicMixGain.connect(streamMixGainNode);
+        }
+
+        musicStreamGain.connect(streamMixGainNode);
+        streamAudioMixActive = true;
+        updateMusicStreamGains();
+
+        return streamPublishAudioDest.stream.getAudioTracks()[0] || null;
+    }
+
+    async function attachPublishAudioTrack(publishTracks) {
+        disconnectPublishAudio();
+
+        const mixTrack = await setupStreamAudioMix();
+        if (mixTrack) {
+            mixTrack.enabled = true;
+            publishTracks.push(mixTrack);
+            return true;
+        }
+
+        publishTracks.push(createSilentAudioTrack());
+        return false;
+    }
+
+    function startWhipFramePump() {
+        stopWhipFramePump();
+
+        if (streamAnimationId) {
+            cancelAnimationFrame(streamAnimationId);
+            streamAnimationId = null;
+        }
+
+        whipFrameTimer = window.setInterval(() => {
+            if (!streamCompositorState) {
+                return;
+            }
+
+            refreshStreamCompositorSources();
+            drawCompositorFrame();
+
+            if (streamPublishVideoTrack && typeof streamPublishVideoTrack.requestFrame === 'function') {
+                try {
+                    streamPublishVideoTrack.requestFrame();
+                } catch {
+                    // Ignore requestFrame errors.
+                }
+            }
+        }, 42);
+    }
+
+    function stopWhipFramePump() {
+        if (whipFrameTimer) {
+            window.clearInterval(whipFrameTimer);
+            whipFrameTimer = null;
+        }
+    }
+
+    async function warmUpStreamCompositor(frameCount = 20) {
+        for (let i = 0; i < frameCount; i += 1) {
+            drawCompositorFrame();
+            await waitForAnimationFrames(1);
+        }
+    }
+
+    function getCanvasCaptureStream() {
+        if (!streamCanvasCaptureStream) {
+            streamCanvasCaptureStream = streamCanvas.captureStream(30);
+            streamPublishVideoTrack = streamCanvasCaptureStream.getVideoTracks()[0] || null;
+        }
+
+        return streamCanvasCaptureStream;
+    }
+
+    function detachStreamCanvasFromDom() {
+        streamCanvas?.remove();
+    }
+
+    function canSendStreamData(ws) {
+        return ws.readyState === WebSocket.OPEN && ws.bufferedAmount < STREAM_SOCKET_BUFFER_LIMIT;
+    }
+
+    function hasStreamMicrophone() {
+        return Boolean(getLiveMicrophoneTrack());
+    }
+
+    function startStreamAudioCapture(ws) {
+        if (!streamPublishAudioDest || !audioContext) {
+            return false;
+        }
+
+        if (audioContext.state === 'suspended') {
+            audioContext.resume();
+        }
+
+        const processor = audioContext.createScriptProcessor(4096, 1, 1);
+        const muteGain = audioContext.createGain();
+        muteGain.gain.value = 0;
+        const mixSource = audioContext.createMediaStreamSource(streamPublishAudioDest.stream);
+
+        mixSource.connect(processor);
+        processor.connect(muteGain);
+        muteGain.connect(audioContext.destination);
+
+        processor.onaudioprocess = (event) => {
+            if (!canSendStreamData(ws)) {
+                return;
+            }
+
+            const input = event.inputBuffer.getChannelData(0);
+            const pcm = new Int16Array(input.length);
+
+            for (let i = 0; i < input.length; i += 1) {
+                const sample = Math.max(-1, Math.min(1, input[i]));
+                pcm[i] = sample < 0 ? sample * 32768 : sample * 32767;
+            }
+
+            const packet = new Uint8Array(1 + pcm.byteLength);
+            packet[0] = 0x02;
+            packet.set(new Uint8Array(pcm.buffer), 1);
+            ws.send(packet.buffer);
+        };
+
+        streamAudioProcessor = { processor, source: mixSource, muteGain };
+        return true;
+    }
+
+    function startWebmStreaming(ws, publishStream) {
+        const mimeType = getRecorderMimeType();
+        if (!mimeType) {
+            throw new Error('WebM recording is not supported in this browser.');
+        }
+
+        streamRecorder = new MediaRecorder(publishStream, {
+            mimeType,
+            videoBitsPerSecond: 2500000,
+            audioBitsPerSecond: 128000,
+        });
+
+        streamRecorder.addEventListener('dataavailable', (event) => {
+            if (event.data.size === 0 || !canSendStreamData(ws)) {
+                return;
+            }
+
+            event.data.arrayBuffer().then((buffer) => {
+                if (canSendStreamData(ws)) {
+                    ws.send(buffer);
+                }
+            });
+        });
+
+        streamRecorder.start(100);
+    }
+
+    function startJpegStreaming(ws) {
+        let lastFrameTime = 0;
+        let lastSentTime = 0;
+        const frameIntervalMs = 50;
+
+        const encodeFrame = () => {
+            if (!streamCanvas || streamJpegEncoding || ws.readyState !== WebSocket.OPEN) {
+                return;
+            }
+
+            const now = performance.now();
+            const mustSend = now - lastSentTime > 1000;
+            if (!mustSend && ws.bufferedAmount > STREAM_SOCKET_BUFFER_LIMIT) {
+                return;
+            }
+
+            streamJpegEncoding = true;
+
+            streamCanvas.toBlob((blob) => {
+                streamJpegEncoding = false;
+
+                if (!blob || ws.readyState !== WebSocket.OPEN) {
+                    return;
+                }
+
+                if (!mustSend && ws.bufferedAmount > STREAM_SOCKET_BUFFER_LIMIT) {
+                    return;
+                }
+
+                blob.arrayBuffer().then((buffer) => {
+                    if (ws.readyState !== WebSocket.OPEN) {
+                        return;
+                    }
+
+                    if (!mustSend && ws.bufferedAmount > STREAM_SOCKET_BUFFER_LIMIT) {
+                        return;
+                    }
+
+                    const packet = new Uint8Array(1 + buffer.byteLength);
+                    packet[0] = 0x01;
+                    packet.set(new Uint8Array(buffer), 1);
+                    ws.send(packet.buffer);
+                    lastSentTime = performance.now();
+                });
+            }, 'image/jpeg', 0.65);
+        };
+
+        const sendFrame = (timestamp) => {
+            streamFrameLoopId = requestAnimationFrame(sendFrame);
+
+            if (timestamp - lastFrameTime < frameIntervalMs) {
+                return;
+            }
+
+            lastFrameTime = timestamp;
+            encodeFrame();
+        };
+
+        encodeFrame();
+        streamFrameLoopId = requestAnimationFrame(sendFrame);
+    }
+
+    function stopStreamCapture() {
+        if (streamRecorder && streamRecorder.state !== 'inactive') {
+            streamRecorder.stop();
+        }
+
+        streamRecorder = null;
+        streamCaptureMode = 'webm';
+
+        if (streamFrameLoopId) {
+            cancelAnimationFrame(streamFrameLoopId);
+            streamFrameLoopId = null;
+        }
+
+        if (streamFrameInterval) {
+            window.clearInterval(streamFrameInterval);
+            streamFrameInterval = null;
+        }
+
+        streamJpegEncoding = false;
+
+        if (streamAudioProcessor) {
+            streamAudioProcessor.processor.onaudioprocess = null;
+            streamAudioProcessor.processor.disconnect();
+            if (streamAudioProcessor.source) {
+                streamAudioProcessor.source.disconnect();
+            }
+            streamAudioProcessor.muteGain.disconnect();
+            streamAudioProcessor = null;
+        }
+    }
+
+    function waitForStreamSocketMessage(ws, expectedType) {
+        return new Promise((resolve, reject) => {
+            const onMessage = (event) => {
+                let message;
+
+                try {
+                    message = JSON.parse(event.data);
+                } catch {
+                    return;
+                }
+
+                ws.removeEventListener('message', onMessage);
+                ws.removeEventListener('close', onClose);
+
+                if (message.type === 'error') {
+                    reject(new Error(message.message || 'Stream relay error.'));
+                    return;
+                }
+
+                if (message.type === expectedType) {
+                    resolve(message);
+                }
+            };
+
+            const onClose = () => {
+                ws.removeEventListener('message', onMessage);
+                reject(new Error('Stream relay connection closed.'));
+            };
+
+            ws.addEventListener('message', onMessage);
+            ws.addEventListener('close', onClose);
+        });
+    }
+
+    function resolveStreamProtocol(streamUrl, streamKey) {
+        const selected = elements.streamProtocol?.value || 'whip';
+        const combined = `${streamUrl} ${streamKey}`.toLowerCase();
+
+        if (selected === 'rtmp' || streamUrl.startsWith('rtmp://')) {
+            return 'rtmp';
+        }
+
+        if (selected === 'whip' || streamUrl.startsWith('https://') || combined.includes('direction=whip')) {
+            return 'whip';
+        }
+
+        return selected;
+    }
+
+    function isCompleteWhipUrl(streamUrl) {
+        return /^https:\/\/.+\/stream\/.+/i.test(streamUrl);
+    }
+
+    function buildWhipEndpoint(streamUrl, streamKey) {
+        let endpoint = streamUrl.trim().replace(/\/+$/, '');
+        const trimmedKey = streamKey.trim().replace(/^\/+/, '');
+
+        if (trimmedKey) {
+            const keyPath = trimmedKey.split('?')[0];
+            const keyQuery = trimmedKey.includes('?') ? trimmedKey.slice(trimmedKey.indexOf('?')) : '';
+
+            if (!endpoint.includes(keyPath)) {
+                endpoint = `${endpoint}/${trimmedKey}`;
+            } else if (keyQuery && !endpoint.includes('direction=whip')) {
+                endpoint += keyQuery.startsWith('?') ? keyQuery : `?${keyQuery}`;
+            }
+        }
+
+        if (!endpoint.includes('direction=whip')) {
+            endpoint += endpoint.includes('?') ? '&direction=whip' : '?direction=whip';
+        }
+
+        return endpoint;
+    }
+
+    function buildRtmpFallbackTarget(streamUrl, streamKey) {
+        if (streamUrl.startsWith('rtmp://')) {
+            return { url: streamUrl, key: streamKey };
+        }
+
+        const trimmedKey = streamKey.trim().replace(/^\/+/, '');
+        const keyFromUrl = streamUrl.match(/\/stream\/([^/?]+)/i)?.[1] || trimmedKey.split('?')[0];
+        const key = trimmedKey || keyFromUrl;
+
+        return {
+            url: 'rtmp://stream.us.shoplive.cloud:1935/stream',
+            key,
+        };
+    }
+
+    function waitForIceGatheringComplete(peerConnection, timeoutMs = 5000) {
+        if (peerConnection.iceGatheringState === 'complete') {
+            return Promise.resolve();
+        }
+
+        return new Promise((resolve) => {
+            const finish = () => {
+                peerConnection.removeEventListener('icegatheringstatechange', onStateChange);
+                window.clearTimeout(timeoutId);
+                resolve();
+            };
+
+            const onStateChange = () => {
+                if (peerConnection.iceGatheringState === 'complete') {
+                    finish();
+                }
+            };
+
+            const timeoutId = window.setTimeout(finish, timeoutMs);
+            peerConnection.addEventListener('icegatheringstatechange', onStateChange);
+        });
+    }
+
+    async function configureWhipSender(peerConnection) {
+        const videoSender = peerConnection.getSenders().find((sender) => sender.track?.kind === 'video');
+        if (videoSender) {
+            const params = videoSender.getParameters();
+            if (!params.encodings.length) {
+                params.encodings = [{}];
+            }
+
+            params.encodings[0].maxBitrate = 2500000;
+            params.encodings[0].maxFramerate = 24;
+            params.degradationPreference = 'balanced';
+
+            try {
+                await videoSender.setParameters(params);
+            } catch (error) {
+                console.warn('Could not tune WHIP video sender:', error);
+            }
+        }
+
+        const audioSender = peerConnection.getSenders().find((sender) => sender.track?.kind === 'audio');
+        if (audioSender) {
+            const params = audioSender.getParameters();
+            if (!params.encodings.length) {
+                params.encodings = [{}];
+            }
+
+            params.encodings[0].maxBitrate = 128000;
+
+            try {
+                await audioSender.setParameters(params);
+            } catch (error) {
+                console.warn('Could not tune WHIP audio sender:', error);
+            }
+        }
+    }
+
+    async function startWhipStream(publishStream, endpoint) {
+        const peerConnection = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+            bundlePolicy: 'max-bundle',
+        });
+
+        publishStream.getTracks().forEach((track) => {
+            track.enabled = true;
+            peerConnection.addTrack(track, publishStream);
+        });
+
+        const offer = await peerConnection.createOffer({
+            offerToReceiveAudio: false,
+            offerToReceiveVideo: false,
+        });
+        await peerConnection.setLocalDescription(offer);
+        await waitForIceGatheringComplete(peerConnection);
+
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/sdp',
+            },
+            body: peerConnection.localDescription?.sdp || offer.sdp,
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text().catch(() => '');
+            throw new Error(`WHIP connection failed (${response.status}): ${errorText || response.statusText}`);
+        }
+
+        const answerSdp = await response.text();
+        const locationHeader = response.headers.get('Location');
+        whipSessionUrl = locationHeader
+            ? new URL(locationHeader, endpoint).href
+            : null;
+
+        await peerConnection.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+        await configureWhipSender(peerConnection);
+        whipPeerConnection = peerConnection;
+        startWhipFramePump();
+
+        peerConnection.addEventListener('connectionstatechange', () => {
+            if (!isOutputStreaming) {
+                return;
+            }
+
+            if (peerConnection.connectionState === 'failed') {
+                stopOutputStream(false);
+                updateStreamOutputStatus('WHIP connection failed.', 'is-error');
+            } else if (peerConnection.connectionState === 'disconnected') {
+                updateStreamOutputStatus('WHIP connection interrupted — retrying…', 'is-live');
+            } else if (peerConnection.connectionState === 'connected') {
+                updateStreamOutputStatus('Streaming to eBay Live (WHIP — low latency)', 'is-live');
+            }
+        });
+    }
+
+    async function stopWhipStream() {
+        if (whipPeerConnection) {
+            whipPeerConnection.close();
+            whipPeerConnection = null;
+        }
+
+        if (whipSessionUrl) {
+            try {
+                await fetch(whipSessionUrl, { method: 'DELETE' });
+            } catch {
+                // Ignore WHIP session cleanup errors.
+            }
+
+            whipSessionUrl = null;
+        }
+    }
+
+    function updateStreamProtocolHint() {
+        if (!elements.streamProtocolHint) {
+            return;
+        }
+
+        if (elements.streamProtocol.value === 'rtmp') {
+            elements.streamProtocolHint.textContent = 'RTMP uses the local FFmpeg relay for higher resolution. Run npm install, then node dev-server.js, and open this page from localhost.';
+            elements.streamUrl.placeholder = 'rtmp://stream.us.shoplive.cloud:1935/stream';
+        } else {
+            elements.streamProtocolHint.textContent = 'WHIP streams directly from your browser to eBay with minimal delay — no FFmpeg or dev server needed. Use the HTTPS ingest URL and key from Seller Hub.';
+            elements.streamUrl.placeholder = 'https://stream.us.shoplive.cloud:4334/stream';
+        }
+    }
+
+    async function startRtmpRelayStream(streamUrl, streamKey) {
+        const relayAvailable = await checkStreamRelayAvailable();
+        if (!streamRelayAvailable) {
+            updateStreamOutputStatus(
+                'RTMP streaming needs the local server. Run npm install, then node dev-server.js, and open localhost.',
+                'is-error'
+            );
+            return;
+        }
+
+        if (!ffmpegAvailable) {
+            updateStreamOutputStatus(
+                'FFmpeg not found. Install with: winget install Gyan.FFmpeg — then restart the dev server.',
+                'is-error'
+            );
+            return;
+        }
+
+        if (!relayAvailable) {
+            return;
+        }
+
+        updateStreamOutputStatus('Connecting to FFmpeg relay…');
+        clearStreamCanvasCapture();
+        await setupStreamAudioMix();
+        await prepareStreamCompositor(false);
+        await warmUpStreamCompositor();
+
+        const hasVideo = Boolean(elements.cameraPreview.srcObject || mediaStream);
+        const hasAudio = Boolean(streamPublishAudioDest);
+        const ws = new WebSocket(getStreamRelayUrl());
+        ws.binaryType = 'arraybuffer';
+
+        await new Promise((resolve, reject) => {
+            ws.addEventListener('open', resolve, { once: true });
+            ws.addEventListener('error', () => reject(new Error('Could not connect to stream relay.')), { once: true });
+        });
+
+        ws.send(JSON.stringify({
+            type: 'start',
+            server: streamUrl,
+            key: streamKey,
+            mode: 'jpeg',
+            hasAudio,
+        }));
+
+        await waitForStreamSocketMessage(ws, 'ready');
+
+        ws.addEventListener('message', (event) => {
+            if (typeof event.data !== 'string') {
+                return;
+            }
+
+            try {
+                const message = JSON.parse(event.data);
+                if (message.type === 'error' && isOutputStreaming) {
+                    stopOutputStream(false);
+                    updateStreamOutputStatus(message.message || 'Stream error.', 'is-error');
+                }
+            } catch {
+                // Ignore non-JSON messages.
+            }
+        });
+
+        ws.addEventListener('close', () => {
+            if (isOutputStreaming) {
+                stopOutputStream(false);
+                updateStreamOutputStatus('Stream relay disconnected.', 'is-error');
+            }
+        });
+
+        streamSocket = ws;
+
+        if (hasAudio) {
+            startStreamAudioCapture(ws);
+        }
+
+        await waitForAnimationFrames(5);
+        startJpegStreaming(ws);
+        setOutputStreamingState(true);
+        updateStreamOutputStatus(
+            hasVideo ? 'Streaming to eBay Live (RTMP)' : 'Streaming to eBay Live (RTMP — effects only)',
+            'is-live'
+        );
+    }
+
+    async function startWhipOutputStream(streamUrl, streamKey) {
+        const endpoint = buildWhipEndpoint(streamUrl, streamKey);
+        updateStreamOutputStatus('Connecting via WHIP…');
+        clearStreamCanvasCapture();
+        await prepareStreamCompositor(false);
+        await warmUpStreamCompositor(12);
+
+        const publishStream = await buildPublishStream();
+        const hasMic = publishStream.getAudioTracks().some((track) => track.readyState === 'live');
+        await startWhipStream(publishStream, endpoint);
+
+        const hasVideo = Boolean(elements.cameraPreview.srcObject || mediaStream?.getVideoTracks().length);
+        setOutputStreamingState(true);
+        updateStreamOutputStatus(
+            hasVideo
+                ? (hasMic ? 'Streaming to eBay Live (WHIP — low latency)' : 'Streaming to eBay Live (WHIP — no mic detected)')
+                : (hasMic ? 'Streaming to eBay Live (WHIP — effects + mic)' : 'Streaming to eBay Live (WHIP — effects only)'),
+            'is-live'
+        );
+    }
+
+    function saveStreamOutputSettings() {
+        const settings = {
+            streamUrl: elements.streamUrl.value.trim(),
+            streamKey: elements.streamKey.value.trim(),
+            streamProtocol: elements.streamProtocol.value,
+        };
+
+        localStorage.setItem(STREAM_OUTPUT_SETTINGS_KEY, JSON.stringify(settings));
+    }
+
+    function loadStreamOutputSettings() {
+        try {
+            const raw = localStorage.getItem(STREAM_OUTPUT_SETTINGS_KEY);
+            if (!raw) {
+                return;
+            }
+
+            const settings = JSON.parse(raw);
+            if (settings.streamUrl) {
+                elements.streamUrl.value = settings.streamUrl;
+            }
+            if (settings.streamKey) {
+                elements.streamKey.value = settings.streamKey;
+            }
+            if (settings.streamProtocol && elements.streamProtocol) {
+                elements.streamProtocol.value = settings.streamProtocol;
+            }
+            updateStreamProtocolHint();
+        } catch {
+            // Ignore invalid saved settings.
+        }
+    }
+
+    async function startOutputStream() {
+        const streamUrl = elements.streamUrl.value.trim();
+        const streamKey = elements.streamKey.value.trim();
+        const protocol = resolveStreamProtocol(streamUrl, streamKey);
+
+        if (!streamUrl) {
+            updateStreamOutputStatus('Enter your stream URL from eBay Live.', 'is-error');
+            return;
+        }
+
+        if (protocol === 'rtmp' && !streamKey) {
+            updateStreamOutputStatus('RTMP requires both stream URL and stream key.', 'is-error');
+            return;
+        }
+
+        if (protocol === 'whip' && !streamKey && !isCompleteWhipUrl(streamUrl)) {
+            updateStreamOutputStatus('Enter your stream key, or paste the full WHIP URL.', 'is-error');
+            return;
+        }
+
+        saveStreamOutputSettings();
+
+        try {
+            updateStreamOutputStatus('Opening microphone…');
+            const micTrack = await acquireStreamMicrophoneTrack(true);
+            if (!micTrack) {
+                updateStreamOutputStatus('No microphone — streaming video/effects only.', 'is-error');
+            } else if (typeof micTrack.clone === 'function') {
+                setupMicAudio(micTrack.clone());
+            }
+
+            await waitForAnimationFrames(2);
+
+            if (protocol === 'whip') {
+                try {
+                    await startWhipOutputStream(streamUrl, streamKey);
+                } catch (whipError) {
+                    console.warn('WHIP failed, falling back to RTMP:', whipError);
+                    await stopWhipStream();
+                    clearStreamCanvasCapture();
+                    stopCompositorLoop();
+
+                    const relayOk = await checkStreamRelayAvailable();
+                    if (!relayOk || !ffmpegAvailable) {
+                        throw whipError;
+                    }
+
+                    updateStreamOutputStatus('WHIP failed — retrying with RTMP relay…');
+                    const rtmpTarget = buildRtmpFallbackTarget(streamUrl, streamKey);
+                    await startRtmpRelayStream(rtmpTarget.url, rtmpTarget.key);
+                }
+            } else {
+                await startRtmpRelayStream(streamUrl, streamKey);
+            }
+        } catch (error) {
+            console.error('Stream start error:', error);
+            stopOutputStream(false);
+            updateStreamOutputStatus(formatStreamError(error), 'is-error');
+        }
+    }
+
+    async function stopOutputStream(sendStopMessage = true) {
+        stopStreamCapture();
+        stopWhipFramePump();
+        disconnectPublishAudio();
+        teardownStreamAudioMix();
+        await stopWhipStream();
+        clearStreamCanvasCapture();
+
+        if (streamSocket) {
+            if (sendStopMessage && streamSocket.readyState === WebSocket.OPEN) {
+                streamSocket.send(JSON.stringify({ type: 'stop' }));
+            }
+
+            streamSocket.close();
+            streamSocket = null;
+        }
+
+        stopCompositorLoop();
+        detachStreamCanvasFromDom();
+        setOutputStreamingState(false);
+
+        if (sendStopMessage) {
+            updateStreamOutputStatus('Stream stopped');
+        }
     }
 
     function applyMirror() {
@@ -483,6 +1791,10 @@
     }
 
     function teardownMicAudio() {
+        if (streamAudioMixActive) {
+            return;
+        }
+
         if (levelAnimationId) {
             cancelAnimationFrame(levelAnimationId);
             levelAnimationId = null;
@@ -496,6 +1808,7 @@
         micGainNode = null;
         micAnalyser = null;
         micMonitorDest = null;
+        micMonitorTrackId = null;
         elements.micLevel.style.width = '0%';
     }
 
@@ -521,12 +1834,19 @@
     }
 
     function setupMicAudio(audioTrack) {
-        teardownMicAudio();
-
         if (!audioTrack) {
             elements.micStatus.textContent = 'No mic';
             return;
         }
+
+        if (micMonitorTrackId === audioTrack.id && audioContext && audioContext.state !== 'closed') {
+            updateMicVolume();
+            elements.micStatus.textContent = 'Active';
+            return;
+        }
+
+        teardownMicAudio();
+        micMonitorTrackId = audioTrack.id;
 
         audioContext = new AudioContext();
         const micStream = new MediaStream([audioTrack]);
@@ -535,7 +1855,7 @@
         micGainNode = audioContext.createGain();
         micAnalyser = audioContext.createAnalyser();
         micAnalyser.fftSize = 256;
-        micMonitorDest = audioContext.destination;
+        micMonitorDest = audioContext.createMediaStreamDestination();
 
         source.connect(micGainNode);
         micGainNode.connect(micAnalyser);
@@ -552,6 +1872,10 @@
 
         if (micGainNode) {
             micGainNode.gain.value = volume;
+        }
+
+        if (streamMicMixGain) {
+            streamMicMixGain.gain.value = volume;
         }
     }
 
@@ -637,7 +1961,7 @@
 
         const constraints = {
             video: videoConstraints,
-            audio: micId ? { deviceId: { exact: micId } } : false,
+            audio: getMicAudioConstraints(micId),
         };
 
         try {
@@ -662,11 +1986,45 @@
                     elements.cameraFullscreen.srcObject = mediaStream;
                     elements.cameraError.classList.add('hidden');
                     elements.fullscreenCameraPlaceholder.classList.add('hidden');
+                } catch (videoErr) {
+                    console.error('Camera fallback error:', videoErr);
+                }
+
+                try {
+                    const micStream = await navigator.mediaDevices.getUserMedia({
+                        audio: getMicAudioConstraints(micId),
+                    });
+                    const micTrack = micStream.getAudioTracks()[0];
+                    if (micTrack) {
+                        if (!mediaStream) {
+                            mediaStream = new MediaStream();
+                        }
+
+                        mediaStream.getAudioTracks().forEach((track) => {
+                            track.stop();
+                            mediaStream.removeTrack(track);
+                        });
+                        mediaStream.addTrack(micTrack);
+
+                        if (mediaStream.getVideoTracks().length) {
+                            elements.cameraPreview.srcObject = mediaStream;
+                            elements.cameraFullscreen.srcObject = mediaStream;
+                            elements.cameraError.classList.add('hidden');
+                            elements.fullscreenCameraPlaceholder.classList.add('hidden');
+                        }
+
+                        setupMicAudio(micTrack);
+                        elements.micLinkHint.classList.add('hidden');
+                        return;
+                    }
+                } catch (micErr) {
+                    console.error('Microphone fallback error:', micErr);
+                }
+
+                if (mediaStream) {
                     elements.micStatus.textContent = 'Mic unavailable';
                     elements.micLinkHint.classList.add('hidden');
                     return;
-                } catch (videoErr) {
-                    console.error('Camera fallback error:', videoErr);
                 }
             }
 
@@ -755,6 +2113,16 @@
         elements.fullscreenCameraPlaceholder.classList.toggle('hidden', hasCamera);
     }
 
+    function purgeEffectLayer(layer) {
+        if (!layer) {
+            return;
+        }
+
+        layer.querySelectorAll('.bat-effect').forEach((effect) => {
+            effect.remove();
+        });
+    }
+
     async function enterFullscreen() {
         isFullscreen = true;
         elements.console.classList.add('hidden');
@@ -762,6 +2130,11 @@
         elements.fullscreenView.classList.add('active');
         setStatus(true);
         syncFullscreenState();
+        refreshStreamCompositorSources();
+
+        if (isOutputStreaming) {
+            purgeEffectLayer(elements.previewEffectLayer);
+        }
 
         const el = elements.fullscreenView;
         try {
@@ -793,13 +2166,16 @@
         elements.fullscreenView.classList.add('hidden');
         elements.fullscreenView.classList.remove('active');
         elements.console.classList.remove('hidden');
-        setStatus(false);
+        setStatus(isOutputStreaming);
+        refreshStreamCompositorSources();
+
+        if (isOutputStreaming) {
+            purgeEffectLayer(elements.fullscreenEffectLayer);
+        }
     }
 
     function updateMusicVolume() {
-        const volume = elements.musicVolume.value / 100;
-        elements.musicPlayer.volume = volume;
-        elements.musicVolumeValue.textContent = `${elements.musicVolume.value}%`;
+        updateMusicStreamGains();
     }
 
     function saveMusicSettings() {
@@ -1299,10 +2675,14 @@
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden) {
                 refreshAllMediaFromFolders();
+                void ensureStreamAudioContext();
             }
         });
 
-        window.addEventListener('focus', refreshAllMediaFromFolders);
+        window.addEventListener('focus', () => {
+            refreshAllMediaFromFolders();
+            void ensureStreamAudioContext();
+        });
         setInterval(refreshAllMediaFromFolders, MEDIA_REFRESH_MS);
     }
 
@@ -1453,6 +2833,106 @@
 
     function updateEffectSfxVolume() {
         elements.effectSfxVolumeValue.textContent = `${elements.effectSfxVolume.value}%`;
+
+        if (streamSfxGain) {
+            streamSfxGain.gain.value = elements.effectSfxVolume.value / 100;
+        }
+    }
+
+    async function loadEffectSoundBuffer(url) {
+        await ensureStreamAudioContext();
+
+        if (effectSoundBufferCache.has(url)) {
+            return effectSoundBufferCache.get(url);
+        }
+
+        const response = await fetch(url);
+        const buffer = await audioContext.decodeAudioData(await response.arrayBuffer());
+        effectSoundBufferCache.set(url, buffer);
+        return buffer;
+    }
+
+    async function playEffectSoundThroughMix(url) {
+        if (!streamSfxGain || !audioContext) {
+            return false;
+        }
+
+        await ensureStreamAudioContext();
+
+        if (audioContext.state === 'suspended') {
+            await audioContext.resume();
+        }
+
+        const volume = elements.effectSfxVolume.value / 100;
+
+        try {
+            const buffer = await loadEffectSoundBuffer(url);
+            const source = audioContext.createBufferSource();
+            const gain = audioContext.createGain();
+            source.buffer = buffer;
+            gain.gain.value = volume;
+            source.connect(gain);
+            gain.connect(streamSfxGain);
+
+            const monitorGain = audioContext.createGain();
+            monitorGain.gain.value = volume;
+            gain.connect(monitorGain);
+            monitorGain.connect(audioContext.destination);
+
+            source.onended = () => {
+                try {
+                    source.disconnect();
+                    gain.disconnect();
+                    monitorGain.disconnect();
+                } catch {
+                    // Already disconnected.
+                }
+            };
+            source.start(0);
+            return true;
+        } catch (error) {
+            effectSoundBufferCache.delete(url);
+            console.warn('Buffer effect play failed, trying media element:', error);
+            return playEffectSoundElementThroughMix(url);
+        }
+    }
+
+    function playEffectSoundElementThroughMix(url) {
+        if (!streamSfxGain || !audioContext) {
+            return Promise.resolve(false);
+        }
+
+        return new Promise((resolve) => {
+            const player = new Audio(url);
+            player.volume = elements.effectSfxVolume.value / 100;
+
+            const cleanup = (source) => {
+                try {
+                    source?.disconnect();
+                } catch {
+                    // Already disconnected.
+                }
+            };
+
+            player.play().then(async () => {
+                try {
+                    await ensureStreamAudioContext();
+                    const source = audioContext.createMediaElementSource(player);
+                    source.connect(streamSfxGain);
+                    source.connect(audioContext.destination);
+                    player.addEventListener('ended', () => {
+                        cleanup(source);
+                        resolve(true);
+                    }, { once: true });
+                } catch (error) {
+                    console.warn('Media element effect mix failed:', error);
+                    resolve(false);
+                }
+            }).catch((error) => {
+                console.warn('Effect audio play failed:', error);
+                resolve(false);
+            });
+        });
     }
 
     function resetSoundRepeatTracking() {
@@ -1485,6 +2965,12 @@
         }
 
         const sound = pickEffectSound();
+
+        if (streamAudioMixActive && streamSfxGain) {
+            void playEffectSoundThroughMix(sound.url);
+            return;
+        }
+
         const player = new Audio(sound.url);
         player.volume = elements.effectSfxVolume.value / 100;
         player.play().catch(() => {
@@ -1528,6 +3014,11 @@
         }
 
         playEffectSound();
+
+        if (isOutputStreaming) {
+            spawnEffectOnLayer(getActiveStreamElements().effectLayer);
+            return;
+        }
 
         if (isFullscreen) {
             spawnEffectOnLayer(elements.fullscreenEffectLayer);
@@ -1624,6 +3115,14 @@
     elements.overlayAspect.addEventListener('change', updateOverlayCamera);
     elements.overlaySize.addEventListener('input', updateOverlayCamera);
     elements.overlayMirrorToggle.addEventListener('change', updateOverlayCamera);
+    elements.streamUrl.addEventListener('change', saveStreamOutputSettings);
+    elements.streamKey.addEventListener('change', saveStreamOutputSettings);
+    elements.streamProtocol.addEventListener('change', () => {
+        updateStreamProtocolHint();
+        saveStreamOutputSettings();
+    });
+    elements.streamStartBtn.addEventListener('click', startOutputStream);
+    elements.streamStopBtn.addEventListener('click', stopOutputStream);
     initOverlayDrag();
     initStreamTap();
     elements.fullscreenBtn.addEventListener('click', enterFullscreen);
@@ -1686,6 +3185,18 @@
     applyMirror();
     applyOverlayVisibility();
     loadStreamSettings();
+    loadStreamOutputSettings();
+    updateStreamProtocolHint();
+    checkStreamRelayAvailable().then((available) => {
+        if (available) {
+            updateStreamOutputStatus('Stream relay ready — enter URL and key to go live');
+        } else if (streamRelayAvailable && !ffmpegAvailable) {
+            updateStreamOutputStatus(
+                'FFmpeg not found. Run: winget install Gyan.FFmpeg — then restart the dev server.',
+                'is-error'
+            );
+        }
+    });
     loadMusicSettings();
     updateMicVolume();
     loadEffectSettings();

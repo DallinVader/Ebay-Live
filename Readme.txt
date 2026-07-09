@@ -25,6 +25,12 @@ No manual refresh or commands needed — add or remove files in the folders and 
 
 ## Local development
 
+Install dependencies once:
+
+```bash
+npm install
+```
+
 Start the dev server:
 
 ```bash
@@ -32,6 +38,16 @@ node dev-server.js
 ```
 
 Then open http://localhost:3456
+
+### Standalone streaming
+
+Streaming goes directly from the console to eBay Live (no OBS). Requirements:
+
+1. Run the app from `node dev-server.js` (not plain static hosting)
+2. [FFmpeg](https://ffmpeg.org/download.html) installed and on your PATH
+3. eBay Live **Stream URL** and **Stream key** from Seller Hub
+
+Enter URL/key in Stream Settings and click **Start streaming**.
 
 ## GitHub Pages
 

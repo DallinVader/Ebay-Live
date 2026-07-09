@@ -1,0 +1,8 @@
+{
+    "name": "ebay-live-console",
+    "private": true,
+    "description": "eBay Live stream console with local RTMP relay",
+    "dependencies": {
+        "ws": "^8.18.1"
+    }
+}
