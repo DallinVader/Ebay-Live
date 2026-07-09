@@ -216,6 +216,57 @@ body {
     border-width: 3px;
 }
 
+.layout-split .main-camera {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 50%;
+    object-fit: cover;
+}
+
+.layout-split .camera-overlay-wrap {
+    top: 50%;
+    left: 0;
+    width: 100%;
+    height: 50%;
+    transform: none;
+    aspect-ratio: unset;
+    border-radius: 0;
+    cursor: default;
+    box-shadow: none;
+    border: none;
+    border-top: 3px solid rgba(255, 255, 255, 0.85);
+}
+
+.layout-split .camera-overlay-wrap.dragging {
+    cursor: default;
+}
+
+.fullscreen-view.layout-split {
+    display: block;
+}
+
+.fullscreen-view.layout-split .main-camera {
+    object-fit: cover;
+}
+
+.fullscreen-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    font-size: 1rem;
+    pointer-events: none;
+    z-index: 1;
+}
+
+.layout-split .fullscreen-placeholder {
+    height: 50%;
+}
+
 .error-text {
     position: absolute;
     inset: 0;

@@ -11,13 +11,17 @@
         fullscreenView: document.getElementById('fullscreen-view'),
         cameraPreview: document.getElementById('camera-preview'),
         cameraFullscreen: document.getElementById('camera-fullscreen'),
+        fullscreenCameraPlaceholder: document.getElementById('fullscreen-camera-placeholder'),
         cameraSelect: document.getElementById('camera-select'),
         overlayEnabledToggle: document.getElementById('overlay-enabled-toggle'),
         overlayCameraSelect: document.getElementById('overlay-camera-select'),
+        overlayLayout: document.getElementById('overlay-layout'),
         overlayAspect: document.getElementById('overlay-aspect'),
         overlaySize: document.getElementById('overlay-size'),
         overlaySizeValue: document.getElementById('overlay-size-value'),
+        overlayDragHint: document.getElementById('overlay-drag-hint'),
         overlayMirrorToggle: document.getElementById('overlay-mirror-toggle'),
+        previewWrapper: document.querySelector('.preview-wrapper'),
         previewOverlayWrap: document.getElementById('preview-overlay-wrap'),
         fullscreenOverlayWrap: document.getElementById('fullscreen-overlay-wrap'),
         cameraOverlayPreview: document.getElementById('camera-overlay-preview'),
@@ -211,10 +215,35 @@
         applyOverlayPosition();
     }
 
+    function isSplitOverlayLayout() {
+        return elements.overlayLayout.value === 'split';
+    }
+
+    function getLayoutContainers() {
+        return [elements.previewWrapper, elements.fullscreenView];
+    }
+
+    function applyOverlayLayoutMode() {
+        const useSplit = elements.overlayEnabledToggle.checked && isSplitOverlayLayout();
+        const usePip = !isSplitOverlayLayout();
+
+        getLayoutContainers().forEach((container) => {
+            container.classList.toggle('layout-split', useSplit);
+        });
+
+        getOverlayWraps().forEach((wrap) => {
+            wrap.title = useSplit ? '' : 'Drag to move';
+        });
+
+        elements.overlayAspect.closest('.setting-group').classList.toggle('hidden', !usePip);
+        elements.overlaySize.closest('.setting-group').classList.toggle('hidden', !usePip);
+        elements.overlayDragHint.classList.toggle('hidden', !usePip);
+    }
+
     function initOverlayDrag() {
         getOverlayWraps().forEach((wrap) => {
             wrap.addEventListener('pointerdown', (event) => {
-                if (wrap.classList.contains('hidden') || event.button !== 0) {
+                if (wrap.classList.contains('hidden') || event.button !== 0 || isSplitOverlayLayout()) {
                     return;
                 }
 
@@ -249,12 +278,19 @@
 
     function setOverlayControlsEnabled(enabled) {
         elements.overlayCameraSelect.disabled = !enabled;
-        elements.overlayAspect.disabled = !enabled;
-        elements.overlaySize.disabled = !enabled;
+        elements.overlayLayout.disabled = !enabled;
+        elements.overlayAspect.disabled = !enabled || isSplitOverlayLayout();
+        elements.overlaySize.disabled = !enabled || isSplitOverlayLayout();
         elements.overlayMirrorToggle.disabled = !enabled;
     }
 
     function applyOverlayCameraLayout() {
+        applyOverlayLayoutMode();
+
+        if (isSplitOverlayLayout()) {
+            return;
+        }
+
         const size = elements.overlaySize.value;
 
         elements.overlaySizeValue.textContent = `${size}%`;
@@ -279,6 +315,7 @@
         const settings = {
             overlayEnabled: elements.overlayEnabledToggle.checked,
             overlayCameraId: elements.overlayCameraSelect.value,
+            overlayLayout: elements.overlayLayout.value,
             overlaySize: elements.overlaySize.value,
             overlayAspect: elements.overlayAspect.value,
             overlayX: overlayPosition.x,
@@ -303,6 +340,9 @@
             }
             if (settings.overlaySize) {
                 elements.overlaySize.value = settings.overlaySize;
+            }
+            if (settings.overlayLayout === 'pip' || settings.overlayLayout === 'split') {
+                elements.overlayLayout.value = settings.overlayLayout;
             }
             if (settings.overlayAspect && OVERLAY_ASPECT_RATIOS[settings.overlayAspect]) {
                 elements.overlayAspect.value = settings.overlayAspect;
@@ -361,6 +401,7 @@
         elements.cameraOverlayFullscreen.srcObject = null;
         elements.previewOverlayWrap.classList.add('hidden');
         elements.fullscreenOverlayWrap.classList.add('hidden');
+        applyOverlayLayoutMode();
     }
 
     async function startOverlayStream(cameraId) {
@@ -492,6 +533,9 @@
 
         elements.cameraPreview.srcObject = null;
         elements.cameraFullscreen.srcObject = null;
+        if (isFullscreen) {
+            elements.fullscreenCameraPlaceholder.classList.remove('hidden');
+        }
     }
 
     function stopStream() {
@@ -569,6 +613,7 @@
             elements.cameraPreview.srcObject = mediaStream;
             elements.cameraFullscreen.srcObject = mediaStream;
             elements.cameraError.classList.add('hidden');
+            elements.fullscreenCameraPlaceholder.classList.add('hidden');
 
             const audioTrack = mediaStream.getAudioTracks()[0];
             setupMicAudio(audioTrack);
@@ -584,6 +629,7 @@
                     elements.cameraPreview.srcObject = mediaStream;
                     elements.cameraFullscreen.srcObject = mediaStream;
                     elements.cameraError.classList.add('hidden');
+                    elements.fullscreenCameraPlaceholder.classList.add('hidden');
                     elements.micStatus.textContent = 'Mic unavailable';
                     elements.micLinkHint.classList.add('hidden');
                     return;
@@ -593,6 +639,7 @@
             }
 
             elements.cameraError.classList.remove('hidden');
+            elements.fullscreenCameraPlaceholder.classList.toggle('hidden', !isFullscreen);
             elements.micStatus.textContent = 'Error';
         }
     }
@@ -666,24 +713,33 @@
         await startStream(elements.cameraSelect.value, elements.micSelect.value || null);
     }
 
-    function enterFullscreen() {
-        if (!mediaStream) {
-            return;
-        }
+    function syncFullscreenState() {
+        applyMirror();
+        applyOverlayVisibility();
+        applyOverlayCameraLayout();
+        applyOverlayCameraMirror();
 
+        const hasCamera = Boolean(mediaStream);
+        elements.fullscreenCameraPlaceholder.classList.toggle('hidden', hasCamera);
+    }
+
+    async function enterFullscreen() {
         isFullscreen = true;
         elements.console.classList.add('hidden');
         elements.fullscreenView.classList.remove('hidden');
         elements.fullscreenView.classList.add('active');
         setStatus(true);
-        applyMirror();
-        applyOverlayVisibility();
+        syncFullscreenState();
 
         const el = elements.fullscreenView;
-        if (el.requestFullscreen) {
-            el.requestFullscreen();
-        } else if (el.webkitRequestFullscreen) {
-            el.webkitRequestFullscreen();
+        try {
+            if (el.requestFullscreen) {
+                await el.requestFullscreen();
+            } else if (el.webkitRequestFullscreen) {
+                el.webkitRequestFullscreen();
+            }
+        } catch {
+            // App fullscreen still works without browser fullscreen.
         }
     }
 
@@ -1339,6 +1395,16 @@
             return;
         }
 
+        if (event.code === 'KeyF' && !event.repeat && !isTypingTarget(event.target)) {
+            event.preventDefault();
+            if (isFullscreen) {
+                exitFullscreen();
+            } else {
+                enterFullscreen();
+            }
+            return;
+        }
+
         if (event.code === effectHotkey && !event.repeat && !isTypingTarget(event.target)) {
             event.preventDefault();
             triggerEffect();
@@ -1352,6 +1418,7 @@
     elements.showOverlayToggle.addEventListener('change', applyOverlayVisibility);
     elements.overlayEnabledToggle.addEventListener('change', updateOverlayCamera);
     elements.overlayCameraSelect.addEventListener('change', updateOverlayCamera);
+    elements.overlayLayout.addEventListener('change', updateOverlayCamera);
     elements.overlayAspect.addEventListener('change', updateOverlayCamera);
     elements.overlaySize.addEventListener('input', updateOverlayCamera);
     elements.overlayMirrorToggle.addEventListener('change', updateOverlayCamera);

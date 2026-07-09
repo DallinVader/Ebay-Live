@@ -8,7 +8,7 @@ A browser-based control console for eBay Live streaming. Upload background music
 - **Microphone selection** with auto-matching to your phone camera (iPhone, DroidCam, etc.)
 - **Mic volume** control and live level meter
 - **Background music** — playlist from `Music/` folder or uploads, click to play, volume control, loop playlist
-- **Overlay camera** — draggable picture-in-picture second camera with size and mirror controls
+- **Overlay camera** — picture-in-picture or split screen (main top, overlay bottom), draggable in PiP mode
 - **Mirror camera** toggle
 - **Live badge overlay** toggle for fullscreen
 - **Action graphics** — upload POW!/BAM! images and sound effects, trigger with hotkey (default Space), random size & rotation

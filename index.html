@@ -69,6 +69,14 @@
                         </div>
 
                         <div class="setting-group">
+                            <label for="overlay-layout">Overlay layout</label>
+                            <select id="overlay-layout" disabled>
+                                <option value="pip">Picture in picture</option>
+                                <option value="split">Split screen (top / bottom)</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-group">
                             <label for="overlay-aspect">Overlay aspect</label>
                             <select id="overlay-aspect" disabled>
                                 <option value="9:16" selected>9:16 Vertical</option>
@@ -84,7 +92,7 @@
                             <input type="range" id="overlay-size" min="15" max="45" value="25" disabled>
                         </div>
 
-                        <p class="field-hint">Drag the overlay in preview or fullscreen to move it anywhere.</p>
+                        <p id="overlay-drag-hint" class="field-hint">Drag the overlay in preview or fullscreen to move it anywhere.</p>
 
                         <div class="setting-row">
                             <label class="toggle-label" for="overlay-mirror-toggle">
@@ -283,13 +291,14 @@
             </main>
 
             <footer class="console-footer">
-                <p>Press <kbd>Esc</kbd> while fullscreen to return to this console. Press your action hotkey (default <kbd>Space</kbd>) to burst a graphic.</p>
+                <p>Press <kbd>Esc</kbd> or <kbd>F</kbd> while fullscreen to return to this console. Press your action hotkey (default <kbd>Space</kbd>) to burst a graphic.</p>
             </footer>
         </div>
 
         <!-- Fullscreen camera output -->
         <div id="fullscreen-view" class="fullscreen-view hidden" tabindex="-1">
             <video id="camera-fullscreen" class="main-camera" autoplay playsinline muted></video>
+            <p id="fullscreen-camera-placeholder" class="fullscreen-placeholder hidden">No camera connected</p>
             <div id="fullscreen-overlay-wrap" class="camera-overlay-wrap hidden" title="Drag to move">
                 <video id="camera-overlay-fullscreen" class="overlay-camera" autoplay playsinline muted></video>
             </div>
