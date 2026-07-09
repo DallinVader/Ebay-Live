@@ -13,25 +13,24 @@ A browser-based control console for eBay Live streaming. Upload background music
 - **Action graphics** — upload POW!/BAM! images and sound effects, trigger with hotkey (default Space), random size & rotation
 - **Full screen camera** — press the button or use fullscreen; press `Esc` to return to the console
 
-## Action graphics folder
+## Media folders
 
-Drop images into `Images/` and sounds into `Sound/` — they load automatically via each folder's `manifest.json`. After adding files locally, run:
+Drop images into `Images/` and sounds into `Sound/`. The app reads those folders automatically:
 
-```bash
-node scripts/generate-manifests.js
-```
+- **Local dev:** `node dev-server.js` (lists folders live from disk)
+- **GitHub Pages:** uses the GitHub API to list `Images/` and `Sound/` in the repo
 
-The GitHub Pages deploy workflow runs this for you on every push.
+No manifest files needed — just add files and refresh (or push for GitHub Pages).
 
 ## Local development
 
-This is a static site — no build step required. Serve the folder with any static server:
+Start the dev server:
 
 ```bash
-npx serve .
+node dev-server.js
 ```
 
-Or open `index.html` directly (camera access may require HTTPS or localhost).
+Then open http://localhost:3456
 
 ## GitHub Pages
 

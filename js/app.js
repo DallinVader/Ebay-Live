@@ -81,8 +81,17 @@
     let effectIdCounter = 0;
 
     const EFFECT_SETTINGS_KEY = 'ebayLiveEffectSettings';
-    const IMAGE_MANIFEST_PATH = 'Images/manifest.json';
-    const SOUND_MANIFEST_PATH = 'Sound/manifest.json';
+    const REPO_CONFIG = { owner: 'DallinVader', repo: 'Ebay-Live' };
+    const FOLDER_TYPES = {
+        Images: {
+            pattern: /\.(png|jpe?g|gif|webp|svg|bmp)$/i,
+            urlPrefix: 'Images',
+        },
+        Sound: {
+            pattern: /\.(mp3|wav|ogg|m4a|aac|flac|webm)$/i,
+            urlPrefix: 'Sound',
+        },
+    };
     const HOTKEY_LABELS = {
         Space: 'Space',
         Enter: 'Enter',
@@ -549,30 +558,59 @@
         updateEffectSfxVolume();
     }
 
-    async function loadEffectImagesFromFolder() {
-        try {
-            const response = await fetch(IMAGE_MANIFEST_PATH);
-            if (!response.ok) {
-                throw new Error(`Manifest not found (${response.status})`);
-            }
-
-            const files = await response.json();
-            const folderImages = files
-                .filter((name) => typeof name === 'string' && /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(name))
-                .map((name) => ({
-                    id: `folder-${name}`,
-                    name,
-                    url: `Images/${encodeURIComponent(name)}`,
-                    isDefault: true,
-                }));
-
-            const uploadedImages = effectImages.filter((image) => !image.isDefault);
-            effectImages = [...folderImages, ...uploadedImages];
-        } catch (err) {
-            console.warn('Could not load Images folder:', err);
-            effectImages = effectImages.filter((image) => !image.isDefault);
+    async function fetchFolderFiles(folderName) {
+        const config = FOLDER_TYPES[folderName];
+        if (!config) {
+            return [];
         }
 
+        try {
+            const localResponse = await fetch(`/api/list/${folderName}`);
+            if (localResponse.ok) {
+                const files = await localResponse.json();
+                if (Array.isArray(files)) {
+                    return files.filter((name) => config.pattern.test(name));
+                }
+            }
+        } catch {
+            // Local folder API unavailable outside dev server.
+        }
+
+        try {
+            const githubResponse = await fetch(
+                `https://api.github.com/repos/${REPO_CONFIG.owner}/${REPO_CONFIG.repo}/contents/${folderName}`
+            );
+            if (githubResponse.ok) {
+                const items = await githubResponse.json();
+                if (Array.isArray(items)) {
+                    return items
+                        .filter((item) => item.type === 'file' && config.pattern.test(item.name))
+                        .map((item) => item.name)
+                        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+                }
+            }
+        } catch {
+            // GitHub folder listing unavailable.
+        }
+
+        return [];
+    }
+
+    function mapFolderFiles(folderName, files) {
+        const config = FOLDER_TYPES[folderName];
+        return files.map((name) => ({
+            id: `folder-${name}`,
+            name,
+            url: `${config.urlPrefix}/${encodeURIComponent(name)}`,
+            isDefault: true,
+        }));
+    }
+
+    async function loadEffectImagesFromFolder() {
+        const files = await fetchFolderFiles('Images');
+        const folderImages = mapFolderFiles('Images', files);
+        const uploadedImages = effectImages.filter((image) => !image.isDefault);
+        effectImages = [...folderImages, ...uploadedImages];
         renderEffectImageList();
     }
 
@@ -659,29 +697,10 @@
     }
 
     async function loadEffectSoundsFromFolder() {
-        try {
-            const response = await fetch(SOUND_MANIFEST_PATH);
-            if (!response.ok) {
-                throw new Error(`Manifest not found (${response.status})`);
-            }
-
-            const files = await response.json();
-            const folderSounds = files
-                .filter((name) => typeof name === 'string' && /\.(mp3|wav|ogg|m4a|aac|flac|webm)$/i.test(name))
-                .map((name) => ({
-                    id: `folder-${name}`,
-                    name,
-                    url: `Sound/${encodeURIComponent(name)}`,
-                    isDefault: true,
-                }));
-
-            const uploadedSounds = effectSounds.filter((sound) => !sound.isDefault);
-            effectSounds = [...folderSounds, ...uploadedSounds];
-        } catch (err) {
-            console.warn('Could not load Sound folder:', err);
-            effectSounds = effectSounds.filter((sound) => !sound.isDefault);
-        }
-
+        const files = await fetchFolderFiles('Sound');
+        const folderSounds = mapFolderFiles('Sound', files);
+        const uploadedSounds = effectSounds.filter((sound) => !sound.isDefault);
+        effectSounds = [...folderSounds, ...uploadedSounds];
         renderEffectSoundList();
     }
 
