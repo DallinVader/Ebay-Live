@@ -79,6 +79,10 @@
     let effectHotkey = 'Space';
     let isCapturingHotkey = false;
     let effectIdCounter = 0;
+    let lastPlayedSoundId = null;
+    let consecutiveSameSoundCount = 0;
+
+    const MAX_CONSECUTIVE_SAME_SOUND = 3;
 
     const EFFECT_SETTINGS_KEY = 'ebayLiveEffectSettings';
     const REPO_CONFIG = { owner: 'DallinVader', repo: 'Ebay-Live' };
@@ -712,6 +716,7 @@
         });
 
         effectSounds = [];
+        resetSoundRepeatTracking();
         renderEffectSoundList();
     }
 
@@ -752,12 +757,36 @@
         elements.effectSfxVolumeValue.textContent = `${elements.effectSfxVolume.value}%`;
     }
 
+    function resetSoundRepeatTracking() {
+        lastPlayedSoundId = null;
+        consecutiveSameSoundCount = 0;
+    }
+
+    function pickEffectSound() {
+        let pool = effectSounds;
+
+        if (lastPlayedSoundId && consecutiveSameSoundCount >= MAX_CONSECUTIVE_SAME_SOUND && effectSounds.length > 1) {
+            pool = effectSounds.filter((sound) => sound.id !== lastPlayedSoundId);
+        }
+
+        const sound = pool[Math.floor(Math.random() * pool.length)];
+
+        if (sound.id === lastPlayedSoundId) {
+            consecutiveSameSoundCount++;
+        } else {
+            lastPlayedSoundId = sound.id;
+            consecutiveSameSoundCount = 1;
+        }
+
+        return sound;
+    }
+
     function playEffectSound() {
         if (!elements.effectSfxToggle.checked || !effectSounds.length) {
             return;
         }
 
-        const sound = effectSounds[Math.floor(Math.random() * effectSounds.length)];
+        const sound = pickEffectSound();
         const player = new Audio(sound.url);
         player.volume = elements.effectSfxVolume.value / 100;
         player.play().catch(() => {
