@@ -21,7 +21,8 @@
         overlaySizeValue: document.getElementById('overlay-size-value'),
         overlayDragHint: document.getElementById('overlay-drag-hint'),
         overlayMirrorToggle: document.getElementById('overlay-mirror-toggle'),
-        previewWrapper: document.querySelector('.preview-wrapper'),
+        previewStreamFrame: document.getElementById('preview-stream-frame'),
+        fullscreenStreamFrame: document.getElementById('fullscreen-stream-frame'),
         previewOverlayWrap: document.getElementById('preview-overlay-wrap'),
         fullscreenOverlayWrap: document.getElementById('fullscreen-overlay-wrap'),
         cameraOverlayPreview: document.getElementById('camera-overlay-preview'),
@@ -122,7 +123,6 @@
     const MUSIC_SETTINGS_KEY = 'ebayLiveMusicSettings';
     const STREAM_SETTINGS_KEY = 'ebayLiveStreamSettings';
     const REPO_CONFIG = { owner: 'DallinVader', repo: 'Ebay-Live' };
-    const IS_GITHUB_PAGES = window.location.hostname.endsWith('github.io');
 
     function resolveAppBasePath() {
         const script = document.currentScript || document.querySelector('script[src*="app.js"]');
@@ -228,7 +228,11 @@
     }
 
     function getLayoutContainers() {
-        return [elements.previewWrapper, elements.fullscreenView];
+        return [elements.previewStreamFrame, elements.fullscreenStreamFrame];
+    }
+
+    function getStreamTapTargets() {
+        return [elements.previewStreamFrame, elements.fullscreenStreamFrame];
     }
 
     function applyOverlayLayoutMode() {
@@ -238,6 +242,7 @@
         getLayoutContainers().forEach((container) => {
             container.classList.toggle('layout-split', useSplit);
         });
+        elements.fullscreenView.classList.toggle('layout-split', useSplit);
 
         getOverlayWraps().forEach((wrap) => {
             wrap.title = useSplit ? '' : 'Drag to move';
@@ -1106,20 +1111,18 @@
         return index;
     }
 
-    function pickFolderFiles(...sources) {
-        for (const list of sources) {
-            if (Array.isArray(list) && list.length > 0) {
-                return sortFolderFiles(list);
-            }
-        }
+    function mergeFolderFiles(...sources) {
+        const names = new Set();
 
-        for (const list of sources) {
-            if (Array.isArray(list)) {
-                return sortFolderFiles(list);
+        sources.forEach((list) => {
+            if (!Array.isArray(list)) {
+                return;
             }
-        }
 
-        return [];
+            list.forEach((name) => names.add(name));
+        });
+
+        return sortFolderFiles([...names]);
     }
 
     async function fetchFolderFilesFromGitHub(folderName) {
@@ -1236,14 +1239,13 @@
             fetchMediaIndexFromJson(),
         ]);
 
-        const sourceOrder = IS_GITHUB_PAGES
-            ? [jsonIndex, githubIndex, devServer, localApi]
-            : [devServer, localApi, githubIndex, jsonIndex];
-
         const index = {};
         MEDIA_FOLDERS.forEach((folder) => {
-            index[folder] = pickFolderFiles(
-                ...sourceOrder.map((source) => source?.[folder])
+            index[folder] = mergeFolderFiles(
+                devServer?.[folder],
+                localApi?.[folder],
+                githubIndex?.[folder],
+                jsonIndex?.[folder]
             );
         });
 
@@ -1510,19 +1512,19 @@
             return;
         }
 
-        if (event.currentTarget === elements.fullscreenView && !isFullscreen) {
+        if (event.currentTarget === elements.previewStreamFrame && isFullscreen) {
             return;
         }
 
-        if (event.currentTarget === elements.previewWrapper && isFullscreen) {
+        if (event.currentTarget === elements.fullscreenStreamFrame && !isFullscreen) {
             return;
         }
 
-        triggerEffect({ fromPreviewTap: event.currentTarget === elements.previewWrapper });
+        triggerEffect({ fromPreviewTap: event.currentTarget === elements.previewStreamFrame });
     }
 
     function initStreamTap() {
-        [elements.previewWrapper, elements.fullscreenView].forEach((target) => {
+        getStreamTapTargets().forEach((target) => {
             target.addEventListener('click', handleStreamTap);
         });
     }

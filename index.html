@@ -30,12 +30,14 @@
                 <section class="panel preview-panel">
                     <h2>Camera Preview</h2>
                     <div class="preview-wrapper">
-                        <video id="camera-preview" class="main-camera" autoplay playsinline muted></video>
-                        <div id="preview-overlay-wrap" class="camera-overlay-wrap hidden" title="Drag to move">
-                            <video id="camera-overlay-preview" class="overlay-camera" autoplay playsinline muted></video>
+                        <div id="preview-stream-frame" class="stream-frame">
+                            <video id="camera-preview" class="main-camera" autoplay playsinline muted></video>
+                            <div id="preview-overlay-wrap" class="camera-overlay-wrap hidden" title="Drag to move">
+                                <video id="camera-overlay-preview" class="overlay-camera" autoplay playsinline muted></video>
+                            </div>
+                            <div id="preview-effect-layer" class="effect-layer" aria-hidden="true"></div>
+                            <p id="camera-error" class="error-text hidden">Camera access denied or unavailable.</p>
                         </div>
-                        <div id="preview-effect-layer" class="effect-layer" aria-hidden="true"></div>
-                        <p id="camera-error" class="error-text hidden">Camera access denied or unavailable.</p>
                     </div>
                     <p class="hint">This preview mirrors your fullscreen output settings.</p>
                 </section>
@@ -297,15 +299,17 @@
 
         <!-- Fullscreen camera output -->
         <div id="fullscreen-view" class="fullscreen-view hidden" tabindex="-1">
-            <video id="camera-fullscreen" class="main-camera" autoplay playsinline muted></video>
-            <p id="fullscreen-camera-placeholder" class="fullscreen-placeholder hidden">No camera connected</p>
-            <div id="fullscreen-overlay-wrap" class="camera-overlay-wrap hidden" title="Drag to move">
-                <video id="camera-overlay-fullscreen" class="overlay-camera" autoplay playsinline muted></video>
-            </div>
-            <div id="fullscreen-effect-layer" class="effect-layer" aria-hidden="true"></div>
-            <div id="live-overlay" class="live-overlay">
-                <span class="live-dot" aria-hidden="true"></span>
-                LIVE
+            <div id="fullscreen-stream-frame" class="stream-frame">
+                <video id="camera-fullscreen" class="main-camera" autoplay playsinline muted></video>
+                <p id="fullscreen-camera-placeholder" class="fullscreen-placeholder hidden">No camera connected</p>
+                <div id="fullscreen-overlay-wrap" class="camera-overlay-wrap hidden" title="Drag to move">
+                    <video id="camera-overlay-fullscreen" class="overlay-camera" autoplay playsinline muted></video>
+                </div>
+                <div id="fullscreen-effect-layer" class="effect-layer" aria-hidden="true"></div>
+                <div id="live-overlay" class="live-overlay">
+                    <span class="live-dot" aria-hidden="true"></span>
+                    LIVE
+                </div>
             </div>
             <p class="fullscreen-hint">Press <kbd>Esc</kbd> to exit fullscreen</p>
         </div>
