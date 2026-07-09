@@ -1250,12 +1250,15 @@
 
         const index = {};
         MEDIA_FOLDERS.forEach((folder) => {
-            index[folder] = mergeFolderFiles(
+            const liveSources = [
                 devServer?.[folder],
                 localApi?.[folder],
                 githubIndex?.[folder],
-                jsonIndex?.[folder]
-            );
+            ].filter((list) => Array.isArray(list));
+
+            index[folder] = liveSources.length
+                ? mergeFolderFiles(...liveSources)
+                : mergeFolderFiles(jsonIndex?.[folder] ?? []);
         });
 
         return index;
