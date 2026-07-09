@@ -154,6 +154,21 @@ body {
     margin-bottom: 1rem;
 }
 
+.setting-subsection {
+    margin: 1.25rem 0 0.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+}
+
+.setting-subsection h3 {
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+    margin-bottom: 0.85rem;
+}
+
 .preview-wrapper {
     position: relative;
     aspect-ratio: 16 / 9;
@@ -162,10 +177,43 @@ body {
     overflow: hidden;
 }
 
-.preview-wrapper video {
+.preview-wrapper video.main-camera {
     width: 100%;
     height: 100%;
     object-fit: cover;
+}
+
+.camera-overlay-wrap {
+    position: absolute;
+    z-index: 4;
+    left: var(--overlay-x, 85%);
+    top: var(--overlay-y, 85%);
+    width: var(--overlay-size, 25%);
+    aspect-ratio: var(--overlay-aspect-ratio, 9 / 16);
+    transform: translate(-50%, -50%);
+    border: 2px solid rgba(255, 255, 255, 0.85);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    background: #000;
+    cursor: grab;
+    touch-action: none;
+}
+
+.camera-overlay-wrap.dragging {
+    cursor: grabbing;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+}
+
+.overlay-camera {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    pointer-events: none;
+}
+
+.fullscreen-view .camera-overlay-wrap {
+    border-width: 3px;
 }
 
 .error-text {
@@ -312,6 +360,64 @@ input[type="range"] {
     outline-offset: 2px;
 }
 
+.music-list {
+    list-style: none;
+    display: grid;
+    gap: 0.65rem;
+    max-height: 180px;
+    overflow-y: auto;
+    padding: 0.25rem;
+    margin-bottom: 1rem;
+}
+
+.music-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.45rem 0.65rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.music-item:hover {
+    border-color: var(--text-secondary);
+}
+
+.music-item.active {
+    border-color: var(--accent);
+    background: var(--accent-muted);
+}
+
+.music-item .music-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+}
+
+.music-item .music-remove {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border: none;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.35);
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.music-item .music-remove:hover {
+    background: var(--accent);
+    color: #fff;
+}
+
 .music-controls {
     display: flex;
     gap: 0.5rem;
@@ -427,13 +533,17 @@ kbd {
     justify-content: center;
 }
 
-.fullscreen-view video {
+.fullscreen-view .main-camera {
     width: 100%;
     height: 100%;
     object-fit: contain;
 }
 
-.fullscreen-view.mirrored video {
+.main-camera.mirrored {
+    transform: scaleX(-1);
+}
+
+.overlay-camera.mirrored {
     transform: scaleX(-1);
 }
 
@@ -441,6 +551,7 @@ kbd {
     position: absolute;
     top: 1.25rem;
     left: 1.25rem;
+    z-index: 6;
     display: flex;
     align-items: center;
     gap: 0.5rem;

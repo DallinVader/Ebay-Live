@@ -19,3 +19,4 @@ function writeManifest(folderName, filePattern) {
 
 writeManifest('Images', /\.(png|jpe?g|gif|webp|svg|bmp)$/i);
 writeManifest('Sound', /\.(mp3|wav|ogg|m4a|aac|flac|webm)$/i);
+writeManifest('Music', /\.(mp3|wav|ogg|m4a|aac|flac|webm)$/i);

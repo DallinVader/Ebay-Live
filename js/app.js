@@ -12,6 +12,16 @@
         cameraPreview: document.getElementById('camera-preview'),
         cameraFullscreen: document.getElementById('camera-fullscreen'),
         cameraSelect: document.getElementById('camera-select'),
+        overlayEnabledToggle: document.getElementById('overlay-enabled-toggle'),
+        overlayCameraSelect: document.getElementById('overlay-camera-select'),
+        overlayAspect: document.getElementById('overlay-aspect'),
+        overlaySize: document.getElementById('overlay-size'),
+        overlaySizeValue: document.getElementById('overlay-size-value'),
+        overlayMirrorToggle: document.getElementById('overlay-mirror-toggle'),
+        previewOverlayWrap: document.getElementById('preview-overlay-wrap'),
+        fullscreenOverlayWrap: document.getElementById('fullscreen-overlay-wrap'),
+        cameraOverlayPreview: document.getElementById('camera-overlay-preview'),
+        cameraOverlayFullscreen: document.getElementById('camera-overlay-fullscreen'),
         micSelect: document.getElementById('mic-select'),
         micLinkHint: document.getElementById('mic-link-hint'),
         micVolume: document.getElementById('mic-volume'),
@@ -25,7 +35,8 @@
         cameraError: document.getElementById('camera-error'),
         liveOverlay: document.getElementById('live-overlay'),
         musicUpload: document.getElementById('music-upload'),
-        musicFilename: document.getElementById('music-filename'),
+        musicClearBtn: document.getElementById('music-clear-btn'),
+        musicList: document.getElementById('music-list'),
         musicVolume: document.getElementById('music-volume'),
         musicVolumeValue: document.getElementById('music-volume-value'),
         musicLoopToggle: document.getElementById('music-loop-toggle'),
@@ -61,7 +72,7 @@
     };
 
     let mediaStream = null;
-    let musicObjectUrl = null;
+    let overlayMediaStream = null;
     let isFullscreen = false;
     let micManuallySelected = false;
     let levelAnimationId = null;
@@ -76,6 +87,9 @@
 
     let effectImages = [];
     let effectSounds = [];
+    let musicTracks = [];
+    let currentMusicId = null;
+    let musicIdCounter = 0;
     let effectHotkey = 'Space';
     let isCapturingHotkey = false;
     let effectIdCounter = 0;
@@ -84,7 +98,23 @@
 
     const MAX_CONSECUTIVE_SAME_SOUND = 3;
 
+    const OVERLAY_CORNER_PRESETS = {
+        'bottom-right': { x: 85, y: 85 },
+        'bottom-left': { x: 15, y: 85 },
+        'top-right': { x: 85, y: 15 },
+        'top-left': { x: 15, y: 15 },
+    };
+
+    const OVERLAY_ASPECT_RATIOS = {
+        '9:16': '9 / 16',
+        default: '16 / 9',
+    };
+
+    let overlayPosition = { x: 85, y: 85 };
+
     const EFFECT_SETTINGS_KEY = 'ebayLiveEffectSettings';
+    const MUSIC_SETTINGS_KEY = 'ebayLiveMusicSettings';
+    const STREAM_SETTINGS_KEY = 'ebayLiveStreamSettings';
     const REPO_CONFIG = { owner: 'DallinVader', repo: 'Ebay-Live' };
     const FOLDER_TYPES = {
         Images: {
@@ -95,6 +125,30 @@
             pattern: /\.(mp3|wav|ogg|m4a|aac|flac|webm)$/i,
             urlPrefix: 'Sound',
         },
+        Music: {
+            pattern: /\.(mp3|wav|ogg|m4a|aac|flac|webm)$/i,
+            urlPrefix: 'Music',
+        },
+    };
+    const DEFAULT_FOLDER_FILES = {
+        Images: [
+            'Kaboom!.png',
+            'Pow.png',
+            'Sold.png',
+            'Whackpow.png',
+            'Wham.png',
+        ],
+        Sound: [
+            'Chair Crash Short.wav',
+            'Chair Crash.wav',
+            'Crash.mp3',
+            'Punch copy.wav',
+            'Punch.wav',
+        ],
+        Music: [
+            'The Man Bat (1).mp3',
+            'The Man Bat (2).mp3',
+        ],
     };
     const HOTKEY_LABELS = {
         Space: 'Space',
@@ -117,7 +171,238 @@
     function applyMirror() {
         const mirrored = elements.mirrorToggle.checked;
         elements.cameraPreview.classList.toggle('mirrored', mirrored);
-        elements.fullscreenView.classList.toggle('mirrored', mirrored);
+        elements.cameraFullscreen.classList.toggle('mirrored', mirrored);
+    }
+
+    function applyOverlayCameraMirror() {
+        const mirrored = elements.overlayMirrorToggle.checked;
+        elements.cameraOverlayPreview.classList.toggle('mirrored', mirrored);
+        elements.cameraOverlayFullscreen.classList.toggle('mirrored', mirrored);
+    }
+
+    function getOverlayWraps() {
+        return [elements.previewOverlayWrap, elements.fullscreenOverlayWrap];
+    }
+
+    function clampOverlayPosition(wrap, parent) {
+        const parentRect = parent.getBoundingClientRect();
+        const wrapRect = wrap.getBoundingClientRect();
+        const halfW = (wrapRect.width / parentRect.width) * 50;
+        const halfH = (wrapRect.height / parentRect.height) * 50;
+
+        overlayPosition.x = Math.max(halfW, Math.min(100 - halfW, overlayPosition.x));
+        overlayPosition.y = Math.max(halfH, Math.min(100 - halfH, overlayPosition.y));
+    }
+
+    function applyOverlayPosition() {
+        getOverlayWraps().forEach((wrap) => {
+            wrap.style.setProperty('--overlay-x', `${overlayPosition.x}%`);
+            wrap.style.setProperty('--overlay-y', `${overlayPosition.y}%`);
+        });
+    }
+
+    function positionOverlayFromPointer(wrap, clientX, clientY) {
+        const parent = wrap.parentElement;
+        const rect = parent.getBoundingClientRect();
+
+        overlayPosition.x = ((clientX - rect.left) / rect.width) * 100;
+        overlayPosition.y = ((clientY - rect.top) / rect.height) * 100;
+        clampOverlayPosition(wrap, parent);
+        applyOverlayPosition();
+    }
+
+    function initOverlayDrag() {
+        getOverlayWraps().forEach((wrap) => {
+            wrap.addEventListener('pointerdown', (event) => {
+                if (wrap.classList.contains('hidden') || event.button !== 0) {
+                    return;
+                }
+
+                event.preventDefault();
+                wrap.classList.add('dragging');
+                wrap.setPointerCapture(event.pointerId);
+
+                const onMove = (moveEvent) => {
+                    positionOverlayFromPointer(wrap, moveEvent.clientX, moveEvent.clientY);
+                };
+
+                const onEnd = () => {
+                    wrap.classList.remove('dragging');
+                    wrap.releasePointerCapture(event.pointerId);
+                    wrap.removeEventListener('pointermove', onMove);
+                    wrap.removeEventListener('pointerup', onEnd);
+                    wrap.removeEventListener('pointercancel', onEnd);
+                    saveStreamSettings();
+                };
+
+                positionOverlayFromPointer(wrap, event.clientX, event.clientY);
+                wrap.addEventListener('pointermove', onMove);
+                wrap.addEventListener('pointerup', onEnd);
+                wrap.addEventListener('pointercancel', onEnd);
+            });
+        });
+    }
+
+    function getOverlayAspectRatio() {
+        return OVERLAY_ASPECT_RATIOS[elements.overlayAspect.value] || OVERLAY_ASPECT_RATIOS['9:16'];
+    }
+
+    function setOverlayControlsEnabled(enabled) {
+        elements.overlayCameraSelect.disabled = !enabled;
+        elements.overlayAspect.disabled = !enabled;
+        elements.overlaySize.disabled = !enabled;
+        elements.overlayMirrorToggle.disabled = !enabled;
+    }
+
+    function applyOverlayCameraLayout() {
+        const size = elements.overlaySize.value;
+
+        elements.overlaySizeValue.textContent = `${size}%`;
+
+        getOverlayWraps().forEach((wrap) => {
+            wrap.style.setProperty('--overlay-size', `${size}%`);
+            wrap.style.setProperty('--overlay-aspect-ratio', getOverlayAspectRatio());
+        });
+
+        applyOverlayPosition();
+
+        if (!elements.previewOverlayWrap.classList.contains('hidden')) {
+            clampOverlayPosition(
+                elements.previewOverlayWrap,
+                elements.previewOverlayWrap.parentElement
+            );
+            applyOverlayPosition();
+        }
+    }
+
+    function saveStreamSettings() {
+        const settings = {
+            overlayEnabled: elements.overlayEnabledToggle.checked,
+            overlayCameraId: elements.overlayCameraSelect.value,
+            overlaySize: elements.overlaySize.value,
+            overlayAspect: elements.overlayAspect.value,
+            overlayX: overlayPosition.x,
+            overlayY: overlayPosition.y,
+            overlayMirror: elements.overlayMirrorToggle.checked,
+        };
+
+        localStorage.setItem(STREAM_SETTINGS_KEY, JSON.stringify(settings));
+    }
+
+    function loadStreamSettings() {
+        try {
+            const raw = localStorage.getItem(STREAM_SETTINGS_KEY);
+            if (!raw) {
+                return;
+            }
+
+            const settings = JSON.parse(raw);
+
+            if (typeof settings.overlayEnabled === 'boolean') {
+                elements.overlayEnabledToggle.checked = settings.overlayEnabled;
+            }
+            if (settings.overlaySize) {
+                elements.overlaySize.value = settings.overlaySize;
+            }
+            if (settings.overlayAspect && OVERLAY_ASPECT_RATIOS[settings.overlayAspect]) {
+                elements.overlayAspect.value = settings.overlayAspect;
+            }
+            if (typeof settings.overlayX === 'number' && typeof settings.overlayY === 'number') {
+                overlayPosition = { x: settings.overlayX, y: settings.overlayY };
+            } else if (settings.overlayPosition && OVERLAY_CORNER_PRESETS[settings.overlayPosition]) {
+                overlayPosition = { ...OVERLAY_CORNER_PRESETS[settings.overlayPosition] };
+            }
+            if (typeof settings.overlayMirror === 'boolean') {
+                elements.overlayMirrorToggle.checked = settings.overlayMirror;
+            }
+            if (settings.overlayCameraId) {
+                elements.overlayCameraSelect.dataset.savedCameraId = settings.overlayCameraId;
+            }
+        } catch {
+            // Ignore invalid saved settings.
+        }
+
+        setOverlayControlsEnabled(elements.overlayEnabledToggle.checked);
+        applyOverlayCameraLayout();
+        applyOverlayCameraMirror();
+    }
+
+    function populateOverlayCameraSelect() {
+        const mainCameraId = elements.cameraSelect.value;
+        const savedCameraId = elements.overlayCameraSelect.dataset.savedCameraId || elements.overlayCameraSelect.value;
+        const availableCameras = cameraDevices.filter((device) => device.deviceId !== mainCameraId);
+
+        elements.overlayCameraSelect.innerHTML = [
+            '<option value="">None</option>',
+            ...availableCameras.map((device, index) => {
+                const label = device.label || `Camera ${index + 1}`;
+                return `<option value="${device.deviceId}">${label}</option>`;
+            }),
+        ].join('');
+
+        if (savedCameraId && availableCameras.some((device) => device.deviceId === savedCameraId)) {
+            elements.overlayCameraSelect.value = savedCameraId;
+        } else if (availableCameras.length) {
+            elements.overlayCameraSelect.value = availableCameras[0].deviceId;
+        } else {
+            elements.overlayCameraSelect.value = '';
+        }
+
+        delete elements.overlayCameraSelect.dataset.savedCameraId;
+    }
+
+    function stopOverlayStream() {
+        if (overlayMediaStream) {
+            overlayMediaStream.getTracks().forEach((track) => track.stop());
+            overlayMediaStream = null;
+        }
+
+        elements.cameraOverlayPreview.srcObject = null;
+        elements.cameraOverlayFullscreen.srcObject = null;
+        elements.previewOverlayWrap.classList.add('hidden');
+        elements.fullscreenOverlayWrap.classList.add('hidden');
+    }
+
+    async function startOverlayStream(cameraId) {
+        stopOverlayStream();
+
+        if (!elements.overlayEnabledToggle.checked || !cameraId) {
+            return;
+        }
+
+        try {
+            overlayMediaStream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    deviceId: { exact: cameraId },
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                },
+                audio: false,
+            });
+
+            elements.cameraOverlayPreview.srcObject = overlayMediaStream;
+            elements.cameraOverlayFullscreen.srcObject = overlayMediaStream;
+            elements.previewOverlayWrap.classList.remove('hidden');
+            elements.fullscreenOverlayWrap.classList.remove('hidden');
+            applyOverlayCameraLayout();
+            applyOverlayCameraMirror();
+        } catch (err) {
+            console.error('Overlay camera error:', err);
+        }
+    }
+
+    async function updateOverlayCamera() {
+        setOverlayControlsEnabled(elements.overlayEnabledToggle.checked);
+        applyOverlayCameraLayout();
+        applyOverlayCameraMirror();
+        saveStreamSettings();
+
+        if (!elements.overlayEnabledToggle.checked) {
+            stopOverlayStream();
+            return;
+        }
+
+        await startOverlayStream(elements.overlayCameraSelect.value);
     }
 
     function applyOverlayVisibility() {
@@ -197,7 +482,7 @@
         }
     }
 
-    function stopStream() {
+    function stopMainStream() {
         teardownMicAudio();
 
         if (mediaStream) {
@@ -207,6 +492,11 @@
 
         elements.cameraPreview.srcObject = null;
         elements.cameraFullscreen.srcObject = null;
+    }
+
+    function stopStream() {
+        stopMainStream();
+        stopOverlayStream();
     }
 
     function findMatchingMic(cameraDevice) {
@@ -263,7 +553,7 @@
     }
 
     async function startStream(cameraId, micId) {
-        stopStream();
+        stopMainStream();
 
         const videoConstraints = cameraId
             ? { deviceId: { exact: cameraId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
@@ -326,6 +616,8 @@
         if (selectedMic && micDevices.some((d) => d.deviceId === selectedMic)) {
             elements.micSelect.value = selectedMic;
         }
+
+        populateOverlayCameraSelect();
     }
 
     async function loadDevices() {
@@ -347,6 +639,7 @@
             elements.cameraSelect.value = cameraId;
             const micId = getSelectedMicId(cameraId);
             await startStream(cameraId, micId);
+            await updateOverlayCamera();
         }
     }
 
@@ -357,7 +650,9 @@
 
         micManuallySelected = false;
         const micId = getSelectedMicId(elements.cameraSelect.value);
+        populateOverlayCameraSelect();
         await startStream(elements.cameraSelect.value, micId);
+        await updateOverlayCamera();
     }
 
     async function handleMicChange() {
@@ -419,27 +714,162 @@
         elements.musicVolumeValue.textContent = `${elements.musicVolume.value}%`;
     }
 
-    function handleMusicUpload(event) {
-        const file = event.target.files[0];
-        if (!file) {
+    function saveMusicSettings() {
+        const settings = {
+            volume: elements.musicVolume.value,
+            loop: elements.musicLoopToggle.checked,
+        };
+
+        localStorage.setItem(MUSIC_SETTINGS_KEY, JSON.stringify(settings));
+    }
+
+    function loadMusicSettings() {
+        try {
+            const raw = localStorage.getItem(MUSIC_SETTINGS_KEY);
+            if (!raw) {
+                return;
+            }
+
+            const settings = JSON.parse(raw);
+
+            if (settings.volume) {
+                elements.musicVolume.value = settings.volume;
+            }
+            if (typeof settings.loop === 'boolean') {
+                elements.musicLoopToggle.checked = settings.loop;
+            }
+        } catch {
+            // Ignore invalid saved settings.
+        }
+
+        updateMusicVolume();
+        elements.musicPlayer.loop = false;
+    }
+
+    function updateMusicControls() {
+        const hasTracks = musicTracks.length > 0;
+        elements.musicPlayBtn.disabled = !hasTracks;
+        elements.musicStopBtn.disabled = !hasTracks || !currentMusicId;
+    }
+
+    function renderMusicList() {
+        if (!musicTracks.length) {
+            elements.musicList.innerHTML = '<li class="effect-empty">No music — add files to the Music folder or upload your own.</li>';
+            updateMusicControls();
             return;
         }
 
-        if (musicObjectUrl) {
-            URL.revokeObjectURL(musicObjectUrl);
+        elements.musicList.innerHTML = musicTracks.map((track) => `
+            <li class="music-item${track.id === currentMusicId ? ' active' : ''}" data-id="${track.id}">
+                <span class="music-name" title="${track.name}">${track.name}</span>
+                <button type="button" class="music-remove" data-id="${track.id}" aria-label="Remove ${track.name}">×</button>
+            </li>
+        `).join('');
+
+        elements.musicList.querySelectorAll('.music-item').forEach((item) => {
+            item.addEventListener('click', (event) => {
+                if (event.target.closest('.music-remove')) {
+                    return;
+                }
+
+                const track = musicTracks.find((entry) => entry.id === item.dataset.id);
+                if (track) {
+                    playMusicTrack(track);
+                }
+            });
+        });
+
+        elements.musicList.querySelectorAll('.music-remove').forEach((btn) => {
+            btn.addEventListener('click', (event) => {
+                event.stopPropagation();
+                removeMusicTrack(btn.dataset.id);
+            });
+        });
+
+        updateMusicControls();
+    }
+
+    async function loadMusicFromFolder() {
+        const files = await getFolderFilesWithFallback('Music');
+        const folderTracks = mapFolderFiles('Music', files);
+        const uploadedTracks = musicTracks.filter((track) => !track.isDefault);
+        musicTracks = [...folderTracks, ...uploadedTracks];
+        renderMusicList();
+    }
+
+    function handleMusicUpload(event) {
+        const files = Array.from(event.target.files || []);
+        if (!files.length) {
+            return;
         }
 
-        musicObjectUrl = URL.createObjectURL(file);
-        elements.musicPlayer.src = musicObjectUrl;
-        elements.musicFilename.textContent = file.name;
-        elements.musicPlayBtn.disabled = false;
-        elements.musicStopBtn.disabled = false;
-        elements.musicPlayBtn.textContent = 'Play';
+        files.forEach((file) => {
+            if (!file.type.startsWith('audio/')) {
+                return;
+            }
+
+            musicTracks.push({
+                id: `music-${++musicIdCounter}`,
+                name: file.name,
+                url: URL.createObjectURL(file),
+                isDefault: false,
+            });
+        });
+
+        renderMusicList();
+        event.target.value = '';
+    }
+
+    function removeMusicTrack(id) {
+        const track = musicTracks.find((item) => item.id === id);
+        if (track && !track.isDefault) {
+            URL.revokeObjectURL(track.url);
+        }
+
+        if (currentMusicId === id) {
+            stopMusic();
+            currentMusicId = null;
+        }
+
+        musicTracks = musicTracks.filter((item) => item.id !== id);
+        renderMusicList();
+    }
+
+    function clearMusicList() {
+        if (currentMusicId) {
+            stopMusic();
+            currentMusicId = null;
+        }
+
+        musicTracks.forEach((track) => {
+            if (!track.isDefault) {
+                URL.revokeObjectURL(track.url);
+            }
+        });
+
+        musicTracks = [];
+        renderMusicList();
+    }
+
+    function playMusicTrack(track) {
+        currentMusicId = track.id;
+        elements.musicPlayer.src = track.url;
+        elements.musicPlayer.loop = false;
         updateMusicVolume();
+        elements.musicPlayer.play().catch(() => {
+            // Autoplay may be blocked until user interaction.
+        });
+        elements.musicPlayBtn.textContent = 'Pause';
+        renderMusicList();
     }
 
     function toggleMusicPlay() {
-        if (!elements.musicPlayer.src) {
+        if (!musicTracks.length) {
+            return;
+        }
+
+        if (!currentMusicId) {
+            playMusicTrack(musicTracks[0]);
             return;
         }
 
@@ -456,6 +886,28 @@
         elements.musicPlayer.pause();
         elements.musicPlayer.currentTime = 0;
         elements.musicPlayBtn.textContent = 'Play';
+        updateMusicControls();
+    }
+
+    function handleMusicEnded() {
+        if (!musicTracks.length || !currentMusicId) {
+            elements.musicPlayBtn.textContent = 'Play';
+            return;
+        }
+
+        const currentIndex = musicTracks.findIndex((track) => track.id === currentMusicId);
+        let nextIndex = currentIndex + 1;
+
+        if (nextIndex >= musicTracks.length) {
+            if (elements.musicLoopToggle.checked) {
+                nextIndex = 0;
+            } else {
+                elements.musicPlayBtn.textContent = 'Play';
+                return;
+            }
+        }
+
+        playMusicTrack(musicTracks[nextIndex]);
     }
 
     function formatHotkeyLabel(code) {
@@ -600,6 +1052,16 @@
         return [];
     }
 
+    async function getFolderFilesWithFallback(folderName) {
+        let files = await fetchFolderFiles(folderName);
+
+        if (!files.length && DEFAULT_FOLDER_FILES[folderName]) {
+            files = [...DEFAULT_FOLDER_FILES[folderName]];
+        }
+
+        return files.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    }
+
     function mapFolderFiles(folderName, files) {
         const config = FOLDER_TYPES[folderName];
         return files.map((name) => ({
@@ -611,7 +1073,7 @@
     }
 
     async function loadEffectImagesFromFolder() {
-        const files = await fetchFolderFiles('Images');
+        const files = await getFolderFilesWithFallback('Images');
         const folderImages = mapFolderFiles('Images', files);
         const uploadedImages = effectImages.filter((image) => !image.isDefault);
         effectImages = [...folderImages, ...uploadedImages];
@@ -701,7 +1163,7 @@
     }
 
     async function loadEffectSoundsFromFolder() {
-        const files = await fetchFolderFiles('Sound');
+        const files = await getFolderFilesWithFallback('Sound');
         const folderSounds = mapFolderFiles('Sound', files);
         const uploadedSounds = effectSounds.filter((sound) => !sound.isDefault);
         effectSounds = [...folderSounds, ...uploadedSounds];
@@ -888,6 +1350,12 @@
     elements.micVolume.addEventListener('input', updateMicVolume);
     elements.mirrorToggle.addEventListener('change', applyMirror);
     elements.showOverlayToggle.addEventListener('change', applyOverlayVisibility);
+    elements.overlayEnabledToggle.addEventListener('change', updateOverlayCamera);
+    elements.overlayCameraSelect.addEventListener('change', updateOverlayCamera);
+    elements.overlayAspect.addEventListener('change', updateOverlayCamera);
+    elements.overlaySize.addEventListener('input', updateOverlayCamera);
+    elements.overlayMirrorToggle.addEventListener('change', updateOverlayCamera);
+    initOverlayDrag();
     elements.fullscreenBtn.addEventListener('click', enterFullscreen);
 
     document.addEventListener('keydown', handleGlobalKeydown);
@@ -905,18 +1373,16 @@
     });
 
     elements.musicUpload.addEventListener('change', handleMusicUpload);
-    elements.musicVolume.addEventListener('input', updateMusicVolume);
-    elements.musicLoopToggle.addEventListener('change', () => {
-        elements.musicPlayer.loop = elements.musicLoopToggle.checked;
+    elements.musicClearBtn.addEventListener('click', clearMusicList);
+    elements.musicVolume.addEventListener('input', () => {
+        updateMusicVolume();
+        saveMusicSettings();
     });
+    elements.musicLoopToggle.addEventListener('change', saveMusicSettings);
     elements.musicPlayBtn.addEventListener('click', toggleMusicPlay);
     elements.musicStopBtn.addEventListener('click', stopMusic);
 
-    elements.musicPlayer.addEventListener('ended', () => {
-        if (!elements.musicPlayer.loop) {
-            elements.musicPlayBtn.textContent = 'Play';
-        }
-    });
+    elements.musicPlayer.addEventListener('ended', handleMusicEnded);
 
     elements.effectImageUpload.addEventListener('change', handleEffectImageUpload);
     elements.effectImageClearBtn.addEventListener('click', clearEffectImages);
@@ -949,12 +1415,13 @@
 
     applyMirror();
     applyOverlayVisibility();
-    updateMusicVolume();
+    loadStreamSettings();
+    loadMusicSettings();
     updateMicVolume();
     loadEffectSettings();
     loadEffectImagesFromFolder();
     loadEffectSoundsFromFolder();
-    elements.musicPlayer.loop = elements.musicLoopToggle.checked;
+    loadMusicFromFolder();
 
     if (navigator.mediaDevices?.getUserMedia) {
         loadDevices();

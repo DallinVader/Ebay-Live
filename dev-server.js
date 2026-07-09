@@ -8,6 +8,7 @@ const PORT = Number(process.env.PORT) || 3456;
 const FOLDER_PATTERNS = {
     Images: /\.(png|jpe?g|gif|webp|svg|bmp)$/i,
     Sound: /\.(mp3|wav|ogg|m4a|aac|flac|webm)$/i,
+    Music: /\.(mp3|wav|ogg|m4a|aac|flac|webm)$/i,
 };
 
 const MIME_TYPES = {
@@ -76,7 +77,7 @@ function serveStatic(req, res) {
 
 const server = http.createServer((req, res) => {
     const url = new URL(req.url, `http://localhost:${PORT}`);
-    const listMatch = url.pathname.match(/^\/api\/list\/(Images|Sound)$/);
+    const listMatch = url.pathname.match(/^\/api\/list\/(Images|Sound|Music)$/);
 
     if (listMatch) {
         sendJson(res, 200, listFolder(listMatch[1]));
@@ -88,5 +89,5 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
     console.log(`eBay Live dev server running at http://localhost:${PORT}`);
-    console.log('Folder listing API: /api/list/Images and /api/list/Sound');
+    console.log('Folder listing API: /api/list/Images, /api/list/Sound, and /api/list/Music');
 });

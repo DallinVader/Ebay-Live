@@ -7,7 +7,8 @@ A browser-based control console for eBay Live streaming. Upload background music
 - **Camera preview** with device selection
 - **Microphone selection** with auto-matching to your phone camera (iPhone, DroidCam, etc.)
 - **Mic volume** control and live level meter
-- **Background music** — upload a track, adjust volume, play/pause, loop
+- **Background music** — playlist from `Music/` folder or uploads, click to play, volume control, loop playlist
+- **Overlay camera** — draggable picture-in-picture second camera with size and mirror controls
 - **Mirror camera** toggle
 - **Live badge overlay** toggle for fullscreen
 - **Action graphics** — upload POW!/BAM! images and sound effects, trigger with hotkey (default Space), random size & rotation
@@ -15,9 +16,9 @@ A browser-based control console for eBay Live streaming. Upload background music
 
 ## Media folders
 
-Drop images into `Images/` and sounds into `Sound/`. The app reads those folders automatically:
+Drop images into `Images/`, sounds into `Sound/`, and music into `Music/`. The app reads those folders automatically:
 
-- **Local dev:** `node dev-server.js` (lists folders live from disk)
+- **Local dev:** `node dev-server.js` (lists `Images/`, `Sound/`, and `Music/` live from disk)
 - **GitHub Pages:** uses the GitHub API to list `Images/` and `Sound/` in the repo
 
 No manifest files needed — just add files and refresh (or push for GitHub Pages).

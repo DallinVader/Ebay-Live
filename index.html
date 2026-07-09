@@ -30,7 +30,10 @@
                 <section class="panel preview-panel">
                     <h2>Camera Preview</h2>
                     <div class="preview-wrapper">
-                        <video id="camera-preview" autoplay playsinline muted></video>
+                        <video id="camera-preview" class="main-camera" autoplay playsinline muted></video>
+                        <div id="preview-overlay-wrap" class="camera-overlay-wrap hidden" title="Drag to move">
+                            <video id="camera-overlay-preview" class="overlay-camera" autoplay playsinline muted></video>
+                        </div>
                         <div id="preview-effect-layer" class="effect-layer" aria-hidden="true"></div>
                         <p id="camera-error" class="error-text hidden">Camera access denied or unavailable.</p>
                     </div>
@@ -45,6 +48,51 @@
                         <select id="camera-select">
                             <option value="">Loading cameras…</option>
                         </select>
+                    </div>
+
+                    <div class="setting-subsection">
+                        <h3>Overlay camera</h3>
+
+                        <div class="setting-row">
+                            <label class="toggle-label" for="overlay-enabled-toggle">
+                                <input type="checkbox" id="overlay-enabled-toggle">
+                                <span class="toggle-switch" aria-hidden="true"></span>
+                                Show overlay camera
+                            </label>
+                        </div>
+
+                        <div class="setting-group">
+                            <label for="overlay-camera-select">Overlay camera</label>
+                            <select id="overlay-camera-select" disabled>
+                                <option value="">None</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-group">
+                            <label for="overlay-aspect">Overlay aspect</label>
+                            <select id="overlay-aspect" disabled>
+                                <option value="9:16" selected>9:16 Vertical</option>
+                                <option value="default">Default</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-group">
+                            <label for="overlay-size">
+                                Overlay size
+                                <span id="overlay-size-value" class="value-label">25%</span>
+                            </label>
+                            <input type="range" id="overlay-size" min="15" max="45" value="25" disabled>
+                        </div>
+
+                        <p class="field-hint">Drag the overlay in preview or fullscreen to move it anywhere.</p>
+
+                        <div class="setting-row">
+                            <label class="toggle-label" for="overlay-mirror-toggle">
+                                <input type="checkbox" id="overlay-mirror-toggle" disabled>
+                                <span class="toggle-switch" aria-hidden="true"></span>
+                                Mirror overlay camera
+                            </label>
+                        </div>
                     </div>
 
                     <div class="setting-group">
@@ -90,12 +138,16 @@
                     <h2>Background Music</h2>
 
                     <div class="setting-group">
-                        <label for="music-upload">Music track</label>
-                        <div class="file-input-row">
-                            <input type="file" id="music-upload" accept="audio/*">
-                            <span id="music-filename" class="filename">No track selected</span>
+                        <label for="music-upload">Upload music</label>
+                        <div class="upload-actions">
+                            <button id="music-clear-btn" type="button" class="btn btn-ghost">Clear</button>
                         </div>
+                        <input type="file" id="music-upload" accept="audio/*" multiple>
                     </div>
+
+                    <ul id="music-list" class="music-list">
+                        <li class="effect-empty">Loading music from Music folder…</li>
+                    </ul>
 
                     <div class="setting-group">
                         <label for="music-volume">
@@ -109,7 +161,7 @@
                         <label class="toggle-label" for="music-loop-toggle">
                             <input type="checkbox" id="music-loop-toggle" checked>
                             <span class="toggle-switch" aria-hidden="true"></span>
-                            Loop track
+                            Loop playlist
                         </label>
                     </div>
 
@@ -237,7 +289,10 @@
 
         <!-- Fullscreen camera output -->
         <div id="fullscreen-view" class="fullscreen-view hidden" tabindex="-1">
-            <video id="camera-fullscreen" autoplay playsinline muted></video>
+            <video id="camera-fullscreen" class="main-camera" autoplay playsinline muted></video>
+            <div id="fullscreen-overlay-wrap" class="camera-overlay-wrap hidden" title="Drag to move">
+                <video id="camera-overlay-fullscreen" class="overlay-camera" autoplay playsinline muted></video>
+            </div>
             <div id="fullscreen-effect-layer" class="effect-layer" aria-hidden="true"></div>
             <div id="live-overlay" class="live-overlay">
                 <span class="live-dot" aria-hidden="true"></span>
@@ -247,7 +302,7 @@
         </div>
     </div>
 
-    <audio id="music-player" loop></audio>
+    <audio id="music-player"></audio>
 
     <script src="js/app.js"></script>
 </body>
