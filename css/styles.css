@@ -175,6 +175,7 @@ body {
     background: #000;
     border-radius: calc(var(--radius) - 2px);
     overflow: hidden;
+    cursor: pointer;
 }
 
 .preview-wrapper video.main-camera {
@@ -582,6 +583,7 @@ kbd {
     display: flex;
     align-items: center;
     justify-content: center;
+    cursor: pointer;
 }
 
 .fullscreen-view .main-camera {

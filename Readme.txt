@@ -16,12 +16,12 @@ A browser-based control console for eBay Live streaming. Upload background music
 
 ## Media folders
 
-Drop images into `Images/`, sounds into `Sound/`, and music into `Music/`. The app reads those folders automatically:
+Drop images into `Images/`, sounds into `Sound/`, and music into `Music/`. The app keeps those lists up to date automatically:
 
-- **Local dev:** `node dev-server.js` (lists `Images/`, `Sound/`, and `Music/` live from disk)
-- **GitHub Pages:** uses the GitHub API to list `Images/` and `Sound/` in the repo
+- **Local dev:** `node dev-server.js` reads the folders live from disk every 15 seconds (and when you return to the tab)
+- **GitHub Pages:** deploy regenerates `media-index.json` from the repo folders on every push; the app also refreshes on a timer and when the tab regains focus
 
-No manifest files needed — just add files and refresh (or push for GitHub Pages).
+No manual refresh or commands needed — add or remove files in the folders and they appear in the console.
 
 ## Local development
 

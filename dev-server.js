@@ -46,8 +46,54 @@ function listFolder(folderName) {
 }
 
 function sendJson(res, status, data) {
-    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.writeHead(status, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+    });
     res.end(JSON.stringify(data));
+}
+
+function buildMediaIndex() {
+    const index = {};
+
+    Object.keys(FOLDER_PATTERNS).forEach((folderName) => {
+        index[folderName] = listFolder(folderName);
+    });
+
+    return index;
+}
+
+function writeMediaIndexFile() {
+    const index = buildMediaIndex();
+    fs.writeFileSync(
+        path.join(ROOT, 'media-index.json'),
+        `${JSON.stringify(index, null, 4)}\n`
+    );
+    return index;
+}
+
+function startFolderWatchers() {
+    let writeTimer;
+
+    const scheduleWrite = (folderName) => {
+        clearTimeout(writeTimer);
+        writeTimer = setTimeout(() => {
+            const index = writeMediaIndexFile();
+            const counts = Object.entries(index)
+                .map(([folder, files]) => `${folder}: ${files.length}`)
+                .join(', ');
+            console.log(`Updated media-index.json (${folderName} changed — ${counts})`);
+        }, 300);
+    };
+
+    Object.keys(FOLDER_PATTERNS).forEach((folderName) => {
+        const folderPath = path.join(ROOT, folderName);
+        if (!fs.existsSync(folderPath)) {
+            return;
+        }
+
+        fs.watch(folderPath, () => scheduleWrite(folderName));
+    });
 }
 
 function serveStatic(req, res) {
@@ -84,10 +130,19 @@ const server = http.createServer((req, res) => {
         return;
     }
 
+    if (url.pathname === '/api/media-index' || url.pathname === '/media-index.json') {
+        sendJson(res, 200, buildMediaIndex());
+        return;
+    }
+
     serveStatic(req, res);
 });
 
 server.listen(PORT, () => {
+    writeMediaIndexFile();
+    startFolderWatchers();
     console.log(`eBay Live dev server running at http://localhost:${PORT}`);
+    console.log('Live media index: /media-index.json and /api/media-index');
     console.log('Folder listing API: /api/list/Images, /api/list/Sound, and /api/list/Music');
+    console.log('Watching Images/, Sound/, and Music/ — media-index.json updates automatically');
 });

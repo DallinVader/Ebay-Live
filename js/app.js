@@ -115,11 +115,13 @@
     };
 
     let overlayPosition = { x: 85, y: 85 };
+    let suppressStreamTap = false;
 
     const EFFECT_SETTINGS_KEY = 'ebayLiveEffectSettings';
     const MUSIC_SETTINGS_KEY = 'ebayLiveMusicSettings';
     const STREAM_SETTINGS_KEY = 'ebayLiveStreamSettings';
     const REPO_CONFIG = { owner: 'DallinVader', repo: 'Ebay-Live' };
+    const MEDIA_FOLDERS = ['Images', 'Sound', 'Music'];
     const FOLDER_TYPES = {
         Images: {
             pattern: /\.(png|jpe?g|gif|webp|svg|bmp)$/i,
@@ -134,26 +136,7 @@
             urlPrefix: 'Music',
         },
     };
-    const DEFAULT_FOLDER_FILES = {
-        Images: [
-            'Kaboom!.png',
-            'Pow.png',
-            'Sold.png',
-            'Whackpow.png',
-            'Wham.png',
-        ],
-        Sound: [
-            'Chair Crash Short.wav',
-            'Chair Crash.wav',
-            'Crash.mp3',
-            'Punch copy.wav',
-            'Punch.wav',
-        ],
-        Music: [
-            'The Man Bat (1).mp3',
-            'The Man Bat (2).mp3',
-        ],
-    };
+    const MEDIA_REFRESH_MS = 15000;
     const HOTKEY_LABELS = {
         Space: 'Space',
         Enter: 'Enter',
@@ -250,8 +233,10 @@
                 event.preventDefault();
                 wrap.classList.add('dragging');
                 wrap.setPointerCapture(event.pointerId);
+                let moved = false;
 
                 const onMove = (moveEvent) => {
+                    moved = true;
                     positionOverlayFromPointer(wrap, moveEvent.clientX, moveEvent.clientY);
                 };
 
@@ -262,6 +247,13 @@
                     wrap.removeEventListener('pointerup', onEnd);
                     wrap.removeEventListener('pointercancel', onEnd);
                     saveStreamSettings();
+
+                    if (moved) {
+                        suppressStreamTap = true;
+                        window.setTimeout(() => {
+                            suppressStreamTap = false;
+                        }, 100);
+                    }
                 };
 
                 positionOverlayFromPointer(wrap, event.clientX, event.clientY);
@@ -845,14 +837,6 @@
         updateMusicControls();
     }
 
-    async function loadMusicFromFolder() {
-        const files = await getFolderFilesWithFallback('Music');
-        const folderTracks = mapFolderFiles('Music', files);
-        const uploadedTracks = musicTracks.filter((track) => !track.isDefault);
-        musicTracks = [...folderTracks, ...uploadedTracks];
-        renderMusicList();
-    }
-
     function handleMusicUpload(event) {
         const files = Array.from(event.target.files || []);
         if (!files.length) {
@@ -1070,52 +1054,196 @@
         updateEffectSfxVolume();
     }
 
-    async function fetchFolderFiles(folderName) {
-        const config = FOLDER_TYPES[folderName];
-        if (!config) {
-            return [];
+    const FETCH_OPTIONS = { cache: 'no-store' };
+
+    function sortFolderFiles(files) {
+        return [...files].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    }
+
+    function normalizeMediaIndex(data) {
+        if (!data || typeof data !== 'object') {
+            return null;
         }
 
-        try {
-            const localResponse = await fetch(`/api/list/${folderName}`);
-            if (localResponse.ok) {
-                const files = await localResponse.json();
-                if (Array.isArray(files)) {
-                    return files.filter((name) => config.pattern.test(name));
-                }
-            }
-        } catch {
-            // Local folder API unavailable outside dev server.
+        if (!MEDIA_FOLDERS.every((folder) => Array.isArray(data[folder]))) {
+            return null;
         }
 
-        try {
-            const githubResponse = await fetch(
-                `https://api.github.com/repos/${REPO_CONFIG.owner}/${REPO_CONFIG.repo}/contents/${folderName}`
-            );
-            if (githubResponse.ok) {
-                const items = await githubResponse.json();
-                if (Array.isArray(items)) {
-                    return items
-                        .filter((item) => item.type === 'file' && config.pattern.test(item.name))
-                        .map((item) => item.name)
-                        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-                }
+        const index = {};
+        MEDIA_FOLDERS.forEach((folder) => {
+            index[folder] = sortFolderFiles(data[folder]);
+        });
+        return index;
+    }
+
+    function pickFolderFiles(...sources) {
+        for (const list of sources) {
+            if (Array.isArray(list)) {
+                return sortFolderFiles(list);
             }
-        } catch {
-            // GitHub folder listing unavailable.
         }
 
         return [];
     }
 
-    async function getFolderFilesWithFallback(folderName) {
-        let files = await fetchFolderFiles(folderName);
-
-        if (!files.length && DEFAULT_FOLDER_FILES[folderName]) {
-            files = [...DEFAULT_FOLDER_FILES[folderName]];
+    async function fetchFolderFilesFromGitHub(folderName) {
+        const config = FOLDER_TYPES[folderName];
+        if (!config) {
+            return null;
         }
 
-        return files.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+        try {
+            const response = await fetch(
+                `https://api.github.com/repos/${REPO_CONFIG.owner}/${REPO_CONFIG.repo}/contents/${encodeURIComponent(folderName)}?ref=main`,
+                {
+                    ...FETCH_OPTIONS,
+                    headers: { Accept: 'application/vnd.github+json' },
+                }
+            );
+            if (!response.ok) {
+                return null;
+            }
+
+            const items = await response.json();
+            if (!Array.isArray(items)) {
+                return null;
+            }
+
+            return sortFolderFiles(
+                items
+                    .filter((item) => item.type === 'file' && config.pattern.test(item.name))
+                    .map((item) => item.name)
+            );
+        } catch {
+            return null;
+        }
+    }
+
+    async function fetchMediaIndexFromDevServer() {
+        try {
+            const response = await fetch(`/api/media-index?t=${Date.now()}`, FETCH_OPTIONS);
+            if (!response.ok) {
+                return null;
+            }
+
+            return normalizeMediaIndex(await response.json());
+        } catch {
+            return null;
+        }
+    }
+
+    async function fetchMediaIndexFromJson() {
+        try {
+            const response = await fetch(`/media-index.json?t=${Date.now()}`, FETCH_OPTIONS);
+            if (!response.ok) {
+                return null;
+            }
+
+            return normalizeMediaIndex(await response.json());
+        } catch {
+            return null;
+        }
+    }
+
+    async function fetchMediaIndexFromLocalApi() {
+        const results = await Promise.all(MEDIA_FOLDERS.map(async (folderName) => {
+            try {
+                const response = await fetch(`/api/list/${folderName}?t=${Date.now()}`, FETCH_OPTIONS);
+                if (!response.ok) {
+                    return null;
+                }
+
+                const files = await response.json();
+                if (!Array.isArray(files)) {
+                    return null;
+                }
+
+                const config = FOLDER_TYPES[folderName];
+                return sortFolderFiles(files.filter((name) => config.pattern.test(name)));
+            } catch {
+                return null;
+            }
+        }));
+
+        if (!results.every((files) => Array.isArray(files))) {
+            return null;
+        }
+
+        const index = {};
+        MEDIA_FOLDERS.forEach((folder, indexPosition) => {
+            index[folder] = results[indexPosition];
+        });
+        return index;
+    }
+
+    async function fetchMediaIndexFromGitHub() {
+        const results = await Promise.all(
+            MEDIA_FOLDERS.map((folder) => fetchFolderFilesFromGitHub(folder))
+        );
+
+        if (results.every((files) => files === null)) {
+            return null;
+        }
+
+        const index = {};
+        MEDIA_FOLDERS.forEach((folder, indexPosition) => {
+            index[folder] = results[indexPosition];
+        });
+        return index;
+    }
+
+    async function fetchMediaIndex() {
+        const [devServer, localApi, githubIndex, jsonIndex] = await Promise.all([
+            fetchMediaIndexFromDevServer(),
+            fetchMediaIndexFromLocalApi(),
+            fetchMediaIndexFromGitHub(),
+            fetchMediaIndexFromJson(),
+        ]);
+
+        const index = {};
+        MEDIA_FOLDERS.forEach((folder) => {
+            index[folder] = pickFolderFiles(
+                devServer?.[folder],
+                localApi?.[folder],
+                githubIndex?.[folder],
+                jsonIndex?.[folder]
+            );
+        });
+
+        return index;
+    }
+
+    function applyFolderMedia(index) {
+        const folderImages = mapFolderFiles('Images', index.Images);
+        const uploadedImages = effectImages.filter((image) => !image.isDefault);
+        effectImages = [...folderImages, ...uploadedImages];
+        renderEffectImageList();
+
+        const folderSounds = mapFolderFiles('Sound', index.Sound);
+        const uploadedSounds = effectSounds.filter((sound) => !sound.isDefault);
+        effectSounds = [...folderSounds, ...uploadedSounds];
+        renderEffectSoundList();
+
+        const folderTracks = mapFolderFiles('Music', index.Music);
+        const uploadedTracks = musicTracks.filter((track) => !track.isDefault);
+        musicTracks = [...folderTracks, ...uploadedTracks];
+        renderMusicList();
+    }
+
+    async function refreshAllMediaFromFolders() {
+        const index = await fetchMediaIndex();
+        applyFolderMedia(index);
+    }
+
+    function initMediaRefresh() {
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) {
+                refreshAllMediaFromFolders();
+            }
+        });
+
+        window.addEventListener('focus', refreshAllMediaFromFolders);
+        setInterval(refreshAllMediaFromFolders, MEDIA_REFRESH_MS);
     }
 
     function mapFolderFiles(folderName, files) {
@@ -1126,14 +1254,6 @@
             url: `${config.urlPrefix}/${encodeURIComponent(name)}`,
             isDefault: true,
         }));
-    }
-
-    async function loadEffectImagesFromFolder() {
-        const files = await getFolderFilesWithFallback('Images');
-        const folderImages = mapFolderFiles('Images', files);
-        const uploadedImages = effectImages.filter((image) => !image.isDefault);
-        effectImages = [...folderImages, ...uploadedImages];
-        renderEffectImageList();
     }
 
     function renderEffectImageList() {
@@ -1216,14 +1336,6 @@
         elements.effectSoundList.querySelectorAll('.effect-remove').forEach((btn) => {
             btn.addEventListener('click', () => removeEffectSound(btn.dataset.id));
         });
-    }
-
-    async function loadEffectSoundsFromFolder() {
-        const files = await getFolderFilesWithFallback('Sound');
-        const folderSounds = mapFolderFiles('Sound', files);
-        const uploadedSounds = effectSounds.filter((sound) => !sound.isDefault);
-        effectSounds = [...folderSounds, ...uploadedSounds];
-        renderEffectSoundList();
     }
 
     function clearEffectSounds() {
@@ -1342,7 +1454,7 @@
         });
     }
 
-    function triggerEffect() {
+    function triggerEffect(options = {}) {
         if (!effectImages.length) {
             return;
         }
@@ -1351,9 +1463,31 @@
 
         if (isFullscreen) {
             spawnEffectOnLayer(elements.fullscreenEffectLayer);
-        } else if (elements.effectPreviewToggle.checked) {
+        } else if (elements.effectPreviewToggle.checked || options.fromPreviewTap) {
             spawnEffectOnLayer(elements.previewEffectLayer);
         }
+    }
+
+    function handleStreamTap(event) {
+        if (suppressStreamTap || isCapturingHotkey) {
+            return;
+        }
+
+        if (event.currentTarget === elements.fullscreenView && !isFullscreen) {
+            return;
+        }
+
+        if (event.currentTarget === elements.previewWrapper && isFullscreen) {
+            return;
+        }
+
+        triggerEffect({ fromPreviewTap: event.currentTarget === elements.previewWrapper });
+    }
+
+    function initStreamTap() {
+        [elements.previewWrapper, elements.fullscreenView].forEach((target) => {
+            target.addEventListener('click', handleStreamTap);
+        });
     }
 
     function startHotkeyCapture() {
@@ -1423,6 +1557,7 @@
     elements.overlaySize.addEventListener('input', updateOverlayCamera);
     elements.overlayMirrorToggle.addEventListener('change', updateOverlayCamera);
     initOverlayDrag();
+    initStreamTap();
     elements.fullscreenBtn.addEventListener('click', enterFullscreen);
 
     document.addEventListener('keydown', handleGlobalKeydown);
@@ -1486,9 +1621,8 @@
     loadMusicSettings();
     updateMicVolume();
     loadEffectSettings();
-    loadEffectImagesFromFolder();
-    loadEffectSoundsFromFolder();
-    loadMusicFromFolder();
+    refreshAllMediaFromFolders();
+    initMediaRefresh();
 
     if (navigator.mediaDevices?.getUserMedia) {
         loadDevices();
