@@ -109,6 +109,7 @@
         'top-left': { x: 15, y: 15 },
     };
 
+    const DEFAULT_OVERLAY_ASPECT = '9:16';
     const OVERLAY_ASPECT_RATIOS = {
         '9:16': '9 / 16',
         default: '16 / 9',
@@ -121,6 +122,30 @@
     const MUSIC_SETTINGS_KEY = 'ebayLiveMusicSettings';
     const STREAM_SETTINGS_KEY = 'ebayLiveStreamSettings';
     const REPO_CONFIG = { owner: 'DallinVader', repo: 'Ebay-Live' };
+    const IS_GITHUB_PAGES = window.location.hostname.endsWith('github.io');
+
+    function resolveAppBasePath() {
+        const script = document.currentScript || document.querySelector('script[src*="app.js"]');
+        if (!script?.src) {
+            return '';
+        }
+
+        try {
+            const scriptPath = new URL(script.src, window.location.href).pathname;
+            const basePath = scriptPath.replace(/\/js\/app\.js$/i, '');
+            return basePath === '/' ? '' : basePath;
+        } catch {
+            return '';
+        }
+    }
+
+    const APP_BASE_PATH = resolveAppBasePath();
+
+    function appPath(relativePath) {
+        const cleaned = relativePath.replace(/^\/+/, '');
+        return APP_BASE_PATH ? `${APP_BASE_PATH}/${cleaned}` : `/${cleaned}`;
+    }
+
     const MEDIA_FOLDERS = ['Images', 'Sound', 'Music'];
     const FOLDER_TYPES = {
         Images: {
@@ -265,7 +290,7 @@
     }
 
     function getOverlayAspectRatio() {
-        return OVERLAY_ASPECT_RATIOS[elements.overlayAspect.value] || OVERLAY_ASPECT_RATIOS['9:16'];
+        return OVERLAY_ASPECT_RATIOS[elements.overlayAspect.value] || OVERLAY_ASPECT_RATIOS[DEFAULT_OVERLAY_ASPECT];
     }
 
     function setOverlayControlsEnabled(enabled) {
@@ -319,9 +344,14 @@
     }
 
     function loadStreamSettings() {
+        elements.overlayAspect.value = DEFAULT_OVERLAY_ASPECT;
+
         try {
             const raw = localStorage.getItem(STREAM_SETTINGS_KEY);
             if (!raw) {
+                setOverlayControlsEnabled(elements.overlayEnabledToggle.checked);
+                applyOverlayCameraLayout();
+                applyOverlayCameraMirror();
                 return;
             }
 
@@ -1078,6 +1108,12 @@
 
     function pickFolderFiles(...sources) {
         for (const list of sources) {
+            if (Array.isArray(list) && list.length > 0) {
+                return sortFolderFiles(list);
+            }
+        }
+
+        for (const list of sources) {
             if (Array.isArray(list)) {
                 return sortFolderFiles(list);
             }
@@ -1121,7 +1157,7 @@
 
     async function fetchMediaIndexFromDevServer() {
         try {
-            const response = await fetch(`/api/media-index?t=${Date.now()}`, FETCH_OPTIONS);
+            const response = await fetch(`${appPath('api/media-index')}?t=${Date.now()}`, FETCH_OPTIONS);
             if (!response.ok) {
                 return null;
             }
@@ -1134,7 +1170,7 @@
 
     async function fetchMediaIndexFromJson() {
         try {
-            const response = await fetch(`/media-index.json?t=${Date.now()}`, FETCH_OPTIONS);
+            const response = await fetch(`${appPath('media-index.json')}?t=${Date.now()}`, FETCH_OPTIONS);
             if (!response.ok) {
                 return null;
             }
@@ -1148,7 +1184,7 @@
     async function fetchMediaIndexFromLocalApi() {
         const results = await Promise.all(MEDIA_FOLDERS.map(async (folderName) => {
             try {
-                const response = await fetch(`/api/list/${folderName}?t=${Date.now()}`, FETCH_OPTIONS);
+                const response = await fetch(`${appPath(`api/list/${folderName}`)}?t=${Date.now()}`, FETCH_OPTIONS);
                 if (!response.ok) {
                     return null;
                 }
@@ -1200,13 +1236,14 @@
             fetchMediaIndexFromJson(),
         ]);
 
+        const sourceOrder = IS_GITHUB_PAGES
+            ? [jsonIndex, githubIndex, devServer, localApi]
+            : [devServer, localApi, githubIndex, jsonIndex];
+
         const index = {};
         MEDIA_FOLDERS.forEach((folder) => {
             index[folder] = pickFolderFiles(
-                devServer?.[folder],
-                localApi?.[folder],
-                githubIndex?.[folder],
-                jsonIndex?.[folder]
+                ...sourceOrder.map((source) => source?.[folder])
             );
         });
 
@@ -1251,7 +1288,7 @@
         return files.map((name) => ({
             id: `folder-${name}`,
             name,
-            url: `${config.urlPrefix}/${encodeURIComponent(name)}`,
+            url: appPath(`${config.urlPrefix}/${encodeURIComponent(name)}`),
             isDefault: true,
         }));
     }

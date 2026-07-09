@@ -171,7 +171,10 @@ body {
 
 .preview-wrapper {
     position: relative;
-    aspect-ratio: 16 / 9;
+    aspect-ratio: 9 / 16;
+    width: min(100%, min(22.5rem, calc(75vh * 9 / 16)));
+    max-height: 75vh;
+    margin: 0 auto;
     background: #000;
     border-radius: calc(var(--radius) - 2px);
     overflow: hidden;
