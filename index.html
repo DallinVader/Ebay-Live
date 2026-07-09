@@ -31,6 +31,7 @@
                     <h2>Camera Preview</h2>
                     <div class="preview-wrapper">
                         <video id="camera-preview" autoplay playsinline muted></video>
+                        <div id="preview-effect-layer" class="effect-layer" aria-hidden="true"></div>
                         <p id="camera-error" class="error-text hidden">Camera access denied or unavailable.</p>
                     </div>
                     <p class="hint">This preview mirrors your fullscreen output settings.</p>
@@ -51,6 +52,21 @@
                         <select id="mic-select">
                             <option value="">Loading microphones…</option>
                         </select>
+                        <p id="mic-link-hint" class="field-hint hidden">Matched to your selected camera automatically.</p>
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="mic-volume">
+                            Mic volume
+                            <span id="mic-volume-value" class="value-label">100%</span>
+                        </label>
+                        <input type="range" id="mic-volume" min="0" max="100" value="100">
+                        <div class="mic-meter-row">
+                            <div class="mic-meter" aria-hidden="true">
+                                <div id="mic-level" class="mic-level"></div>
+                            </div>
+                            <span id="mic-status" class="mic-status">No mic</span>
+                        </div>
                     </div>
 
                     <div class="setting-row">
@@ -102,16 +118,127 @@
                         <button id="music-stop-btn" type="button" class="btn btn-ghost" disabled>Stop</button>
                     </div>
                 </section>
+
+                <section class="panel effects-panel">
+                    <h2>Action Graphics</h2>
+                    <p class="panel-desc">1960s Batman-style POW! bursts. Upload images and sounds, then hit your hotkey during stream.</p>
+
+                    <div class="effects-grid">
+                        <div class="effects-upload-col">
+                            <div class="setting-group">
+                                <label for="effect-image-upload">Upload graphics</label>
+                                <div class="upload-actions">
+                                    <button id="effect-image-clear-btn" type="button" class="btn btn-ghost">Clear</button>
+                                </div>
+                                <input type="file" id="effect-image-upload" accept="image/*" multiple>
+                            </div>
+
+                            <ul id="effect-image-list" class="effect-image-list">
+                                <li class="effect-empty">Loading default graphics…</li>
+                            </ul>
+
+                            <div class="setting-group">
+                                <label for="effect-sound-upload">Upload sound effects</label>
+                                <div class="upload-actions">
+                                    <button id="effect-sound-clear-btn" type="button" class="btn btn-ghost">Clear</button>
+                                </div>
+                                <input type="file" id="effect-sound-upload" accept="audio/*" multiple>
+                            </div>
+
+                            <ul id="effect-sound-list" class="effect-sound-list">
+                                <li class="effect-empty">Loading default sounds…</li>
+                            </ul>
+                        </div>
+
+                        <div class="effects-settings-col">
+                            <div class="setting-group">
+                                <label>Hotkey</label>
+                                <div class="hotkey-row">
+                                    <button id="hotkey-set-btn" type="button" class="btn btn-secondary hotkey-btn">
+                                        <kbd id="hotkey-display">Space</kbd>
+                                    </button>
+                                    <button id="effect-test-btn" type="button" class="btn btn-ghost" disabled>Test</button>
+                                </div>
+                                <p class="field-hint hotkey-hint hidden" id="hotkey-capture-hint">Press any key…</p>
+                            </div>
+
+                            <div class="setting-group">
+                                <label for="effect-sfx-volume">
+                                    Sound volume
+                                    <span id="effect-sfx-volume-value" class="value-label">80%</span>
+                                </label>
+                                <input type="range" id="effect-sfx-volume" min="0" max="100" value="80">
+                            </div>
+
+                            <div class="setting-row">
+                                <label class="toggle-label" for="effect-sfx-toggle">
+                                    <input type="checkbox" id="effect-sfx-toggle" checked>
+                                    <span class="toggle-switch" aria-hidden="true"></span>
+                                    Play sound on burst
+                                </label>
+                            </div>
+
+                            <div class="setting-group">
+                                <label for="effect-size-min">
+                                    Size min
+                                    <span id="effect-size-min-value" class="value-label">20%</span>
+                                </label>
+                                <input type="range" id="effect-size-min" min="10" max="80" value="20">
+                            </div>
+
+                            <div class="setting-group">
+                                <label for="effect-size-max">
+                                    Size max
+                                    <span id="effect-size-max-value" class="value-label">45%</span>
+                                </label>
+                                <input type="range" id="effect-size-max" min="10" max="80" value="45">
+                            </div>
+
+                            <div class="setting-group">
+                                <label for="effect-rotation-min">
+                                    Rotation min
+                                    <span id="effect-rotation-min-value" class="value-label">-25°</span>
+                                </label>
+                                <input type="range" id="effect-rotation-min" min="-90" max="90" value="-25">
+                            </div>
+
+                            <div class="setting-group">
+                                <label for="effect-rotation-max">
+                                    Rotation max
+                                    <span id="effect-rotation-max-value" class="value-label">25°</span>
+                                </label>
+                                <input type="range" id="effect-rotation-max" min="-90" max="90" value="25">
+                            </div>
+
+                            <div class="setting-group">
+                                <label for="effect-duration">
+                                    Display time
+                                    <span id="effect-duration-value" class="value-label">1.5s</span>
+                                </label>
+                                <input type="range" id="effect-duration" min="0.5" max="4" step="0.1" value="1.5">
+                            </div>
+
+                            <div class="setting-row">
+                                <label class="toggle-label" for="effect-preview-toggle">
+                                    <input type="checkbox" id="effect-preview-toggle" checked>
+                                    <span class="toggle-switch" aria-hidden="true"></span>
+                                    Show in preview
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </section>
             </main>
 
             <footer class="console-footer">
-                <p>Press <kbd>Esc</kbd> while fullscreen to return to this console.</p>
+                <p>Press <kbd>Esc</kbd> while fullscreen to return to this console. Press your action hotkey (default <kbd>Space</kbd>) to burst a graphic.</p>
             </footer>
         </div>
 
         <!-- Fullscreen camera output -->
         <div id="fullscreen-view" class="fullscreen-view hidden" tabindex="-1">
             <video id="camera-fullscreen" autoplay playsinline muted></video>
+            <div id="fullscreen-effect-layer" class="effect-layer" aria-hidden="true"></div>
             <div id="live-overlay" class="live-overlay">
                 <span class="live-dot" aria-hidden="true"></span>
                 LIVE
