@@ -67,6 +67,10 @@
         hotkeySetBtn: document.getElementById('hotkey-set-btn'),
         hotkeyDisplay: document.getElementById('hotkey-display'),
         hotkeyCaptureHint: document.getElementById('hotkey-capture-hint'),
+        soldHotkeySetBtn: document.getElementById('sold-hotkey-set-btn'),
+        soldHotkeyDisplay: document.getElementById('sold-hotkey-display'),
+        soldHotkeyCaptureHint: document.getElementById('sold-hotkey-capture-hint'),
+        soldTestBtn: document.getElementById('sold-test-btn'),
         effectTestBtn: document.getElementById('effect-test-btn'),
         effectSizeMin: document.getElementById('effect-size-min'),
         effectSizeMax: document.getElementById('effect-size-max'),
@@ -103,6 +107,8 @@
     let currentMusicId = null;
     let musicIdCounter = 0;
     let effectHotkey = 'Space';
+    let soldHotkey = 'KeyS';
+    let hotkeyCaptureTarget = null;
     let isCapturingHotkey = false;
     let effectIdCounter = 0;
     const sessionHiddenFolderMedia = {
@@ -132,6 +138,9 @@
     let suppressStreamTap = false;
 
     const EFFECT_SETTINGS_KEY = 'ebayLiveEffectSettings';
+    const SOLD_SPIN_MS = 580;
+    const SOLD_HOLD_MS = 2200;
+    const SOLD_MAX_SCALE = 3.85;
     const MUSIC_SETTINGS_KEY = 'ebayLiveMusicSettings';
     const STREAM_SETTINGS_KEY = 'ebayLiveStreamSettings';
     const STREAM_OUTPUT_SETTINGS_KEY = 'ebayLiveStreamOutputSettings';
@@ -162,6 +171,8 @@
         const cleaned = relativePath.replace(/^\/+/, '');
         return APP_BASE_PATH ? `${APP_BASE_PATH}/${cleaned}` : `/${cleaned}`;
     }
+
+    const SOLD_IMAGE_URL = appPath('Images/Sold.png');
 
     const MEDIA_FOLDERS = ['Images', 'Sound', 'Music'];
     const FOLDER_TYPES = {
@@ -281,6 +292,39 @@
             ffmpegAvailable = false;
             return false;
         }
+    }
+
+    function syncStreamVideoBindings() {
+        if (mediaStream) {
+            if (isFullscreen) {
+                elements.cameraFullscreen.srcObject = mediaStream;
+                elements.cameraPreview.srcObject = null;
+            } else {
+                elements.cameraPreview.srcObject = mediaStream;
+                elements.cameraFullscreen.srcObject = null;
+            }
+        } else {
+            elements.cameraPreview.srcObject = null;
+            elements.cameraFullscreen.srcObject = null;
+        }
+
+        const overlayActive = Boolean(
+            overlayMediaStream
+            && elements.overlayEnabledToggle.checked
+            && !elements.previewOverlayWrap.classList.contains('hidden'),
+        );
+
+        if (overlayActive) {
+            if (isFullscreen) {
+                elements.cameraOverlayFullscreen.srcObject = overlayMediaStream;
+                elements.cameraOverlayPreview.srcObject = null;
+            } else {
+                elements.cameraOverlayPreview.srcObject = overlayMediaStream;
+                elements.cameraOverlayFullscreen.srcObject = null;
+            }
+        }
+
+        refreshStreamCompositorSources();
     }
 
     function getActiveStreamElements() {
@@ -408,15 +452,92 @@
                 ctx.drawImage(effect, drawX, drawY, drawWidth, drawHeight);
             }
         });
+
+        drawCompositorSoldEffects(ctx, effectLayer, width, height);
+    }
+
+    function getSoldCompositorState(elapsedMs) {
+        if (elapsedMs < 0) {
+            return null;
+        }
+
+        if (elapsedMs >= SOLD_SPIN_MS + SOLD_HOLD_MS) {
+            return null;
+        }
+
+        const spinProgress = Math.min(1, elapsedMs / SOLD_SPIN_MS);
+        const rotation = spinProgress * 720;
+        let scale = 1;
+        let opacity = 1;
+
+        if (spinProgress < 0.18) {
+            scale = SOLD_MAX_SCALE - ((SOLD_MAX_SCALE - 2.4) * (spinProgress / 0.18));
+        } else if (spinProgress < 0.38) {
+            scale = 2.4 - ((2.4 - 1.5) * ((spinProgress - 0.18) / 0.2));
+        } else if (spinProgress < 0.58) {
+            scale = 1.5 - ((1.5 - 1.12) * ((spinProgress - 0.38) / 0.2));
+        } else if (spinProgress < 0.78) {
+            scale = 1.12 - ((1.12 - 1.03) * ((spinProgress - 0.58) / 0.2));
+        } else {
+            scale = 1.03 - ((1.03 - 1) * ((spinProgress - 0.78) / 0.22));
+        }
+
+        if (elapsedMs > SOLD_SPIN_MS) {
+            const holdProgress = (elapsedMs - SOLD_SPIN_MS) / SOLD_HOLD_MS;
+            scale = 1;
+            opacity = holdProgress > 0.82 ? Math.max(0, 1 - ((holdProgress - 0.82) / 0.18)) : 1;
+        }
+
+        return {
+            rotation: (rotation * Math.PI) / 180,
+            scale,
+            opacity,
+        };
+    }
+
+    function drawCompositorSoldEffects(ctx, effectLayer, width, height) {
+        const soldEffects = effectLayer.querySelectorAll('.sold-effect');
+
+        if (!soldEffects.length) {
+            return;
+        }
+
+        const now = performance.now();
+        const baseWidth = width * 0.44;
+
+        soldEffects.forEach((wrap) => {
+            const effect = wrap.querySelector('.sold-effect-img');
+
+            if (!effect?.complete || !effect.naturalWidth) {
+                return;
+            }
+
+            const spawnedAt = Number(wrap.dataset.spawnedAt);
+            const elapsedMs = Number.isFinite(spawnedAt) ? now - spawnedAt : 0;
+            const state = getSoldCompositorState(elapsedMs);
+
+            if (!state || state.opacity <= 0) {
+                return;
+            }
+
+            const baseHeight = baseWidth * (effect.naturalHeight / effect.naturalWidth);
+            const centerX = width * 0.5;
+            const centerY = height * 0.5;
+            const drawScale = Math.min(state.scale, SOLD_MAX_SCALE);
+
+            ctx.save();
+            ctx.globalAlpha = state.opacity;
+            ctx.translate(centerX, centerY);
+            ctx.rotate(state.rotation);
+            ctx.scale(drawScale, drawScale);
+            ctx.drawImage(effect, -baseWidth / 2, -baseHeight / 2, baseWidth, baseHeight);
+            ctx.restore();
+        });
     }
 
     function drawCompositorFrame() {
         if (!streamCompositorState) {
             return;
-        }
-
-        if (isOutputStreaming) {
-            refreshStreamCompositorSources();
         }
 
         const {
@@ -819,7 +940,6 @@
                 return;
             }
 
-            refreshStreamCompositorSources();
             drawCompositorFrame();
 
             if (streamPublishVideoTrack && typeof streamPublishVideoTrack.requestFrame === 'function') {
@@ -1648,6 +1768,7 @@
 
     function saveStreamSettings() {
         const settings = {
+            cameraId: elements.cameraSelect.value,
             overlayEnabled: elements.overlayEnabledToggle.checked,
             overlayCameraId: elements.overlayCameraSelect.value,
             overlayLayout: elements.overlayLayout.value,
@@ -1697,6 +1818,9 @@
             }
             if (settings.overlayCameraId) {
                 elements.overlayCameraSelect.dataset.savedCameraId = settings.overlayCameraId;
+            }
+            if (typeof settings.cameraId === 'string') {
+                elements.cameraSelect.dataset.savedCameraId = settings.cameraId;
             }
         } catch {
             // Ignore invalid saved settings.
@@ -1761,10 +1885,9 @@
                 audio: false,
             });
 
-            elements.cameraOverlayPreview.srcObject = overlayMediaStream;
-            elements.cameraOverlayFullscreen.srcObject = overlayMediaStream;
             elements.previewOverlayWrap.classList.remove('hidden');
             elements.fullscreenOverlayWrap.classList.remove('hidden');
+            syncStreamVideoBindings();
             applyOverlayCameraLayout();
             applyOverlayCameraMirror();
         } catch (err) {
@@ -1955,9 +2078,35 @@
     async function startStream(cameraId, micId) {
         stopMainStream();
 
-        const videoConstraints = cameraId
-            ? { deviceId: { exact: cameraId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
-            : { facingMode: 'user', width: { ideal: 1920 }, height: { ideal: 1080 } };
+        if (!cameraId) {
+            syncStreamVideoBindings();
+            elements.fullscreenCameraPlaceholder.classList.remove('hidden');
+
+            if (!micId) {
+                return;
+            }
+
+            try {
+                const micStream = await navigator.mediaDevices.getUserMedia({
+                    audio: getMicAudioConstraints(micId),
+                });
+                const micTrack = micStream.getAudioTracks()[0];
+
+                if (micTrack) {
+                    mediaStream = new MediaStream([micTrack]);
+                    setupMicAudio(micTrack);
+                    elements.cameraError.classList.add('hidden');
+                    elements.micLinkHint.classList.add('hidden');
+                }
+            } catch (err) {
+                console.error('Microphone-only stream error:', err);
+                elements.micStatus.textContent = 'Error';
+            }
+
+            return;
+        }
+
+        const videoConstraints = { deviceId: { exact: cameraId }, width: { ideal: 1920 }, height: { ideal: 1080 } };
 
         const constraints = {
             video: videoConstraints,
@@ -1966,8 +2115,7 @@
 
         try {
             mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-            elements.cameraPreview.srcObject = mediaStream;
-            elements.cameraFullscreen.srcObject = mediaStream;
+            syncStreamVideoBindings();
             elements.cameraError.classList.add('hidden');
             elements.fullscreenCameraPlaceholder.classList.add('hidden');
 
@@ -1982,8 +2130,7 @@
                         video: videoConstraints,
                         audio: false,
                     });
-                    elements.cameraPreview.srcObject = mediaStream;
-                    elements.cameraFullscreen.srcObject = mediaStream;
+                    syncStreamVideoBindings();
                     elements.cameraError.classList.add('hidden');
                     elements.fullscreenCameraPlaceholder.classList.add('hidden');
                 } catch (videoErr) {
@@ -2007,8 +2154,7 @@
                         mediaStream.addTrack(micTrack);
 
                         if (mediaStream.getVideoTracks().length) {
-                            elements.cameraPreview.srcObject = mediaStream;
-                            elements.cameraFullscreen.srcObject = mediaStream;
+                            syncStreamVideoBindings();
                             elements.cameraError.classList.add('hidden');
                             elements.fullscreenCameraPlaceholder.classList.add('hidden');
                         }
@@ -2036,18 +2182,32 @@
 
     function populateDeviceSelects() {
         const selectedCamera = elements.cameraSelect.value;
+        const savedCameraId = elements.cameraSelect.dataset.savedCameraId;
         const selectedMic = elements.micSelect.value;
 
-        elements.cameraSelect.innerHTML = cameraDevices.length
-            ? cameraDevices.map((d, i) => `<option value="${d.deviceId}">${d.label || `Camera ${i + 1}`}</option>`).join('')
-            : '<option value="">No cameras found</option>';
+        elements.cameraSelect.innerHTML = [
+            '<option value="">None</option>',
+            ...cameraDevices.map((device, index) => {
+                const label = device.label || `Camera ${index + 1}`;
+                return `<option value="${device.deviceId}">${label}</option>`;
+            }),
+        ].join('');
 
         elements.micSelect.innerHTML = micDevices.length
             ? micDevices.map((d, i) => `<option value="${d.deviceId}">${d.label || `Microphone ${i + 1}`}</option>`).join('')
             : '<option value="">No microphones found</option>';
 
-        if (selectedCamera && cameraDevices.some((d) => d.deviceId === selectedCamera)) {
+        if (selectedCamera && cameraDevices.some((device) => device.deviceId === selectedCamera)) {
             elements.cameraSelect.value = selectedCamera;
+        } else if (savedCameraId !== undefined) {
+            if (savedCameraId && cameraDevices.some((device) => device.deviceId === savedCameraId)) {
+                elements.cameraSelect.value = savedCameraId;
+            } else {
+                elements.cameraSelect.value = '';
+            }
+            delete elements.cameraSelect.dataset.savedCameraId;
+        } else {
+            elements.cameraSelect.value = '';
         }
 
         if (selectedMic && micDevices.some((d) => d.deviceId === selectedMic)) {
@@ -2071,23 +2231,27 @@
 
         populateDeviceSelects();
 
-        if (cameraDevices.length) {
-            const cameraId = elements.cameraSelect.value || cameraDevices[0].deviceId;
-            elements.cameraSelect.value = cameraId;
-            const micId = getSelectedMicId(cameraId);
-            await startStream(cameraId, micId);
+        if (elements.cameraSelect.value) {
+            const micId = getSelectedMicId(elements.cameraSelect.value);
+            await startStream(elements.cameraSelect.value, micId);
             await updateOverlayCamera();
         }
     }
 
     async function handleCameraChange() {
+        micManuallySelected = false;
+        populateOverlayCameraSelect();
+        saveStreamSettings();
+
         if (!elements.cameraSelect.value) {
+            const micId = elements.micSelect.value || null;
+            await startStream(null, micId);
+            await updateOverlayCamera();
+            syncFullscreenState();
             return;
         }
 
-        micManuallySelected = false;
         const micId = getSelectedMicId(elements.cameraSelect.value);
-        populateOverlayCameraSelect();
         await startStream(elements.cameraSelect.value, micId);
         await updateOverlayCamera();
     }
@@ -2096,11 +2260,7 @@
         micManuallySelected = true;
         elements.micLinkHint.classList.add('hidden');
 
-        if (!elements.cameraSelect.value) {
-            return;
-        }
-
-        await startStream(elements.cameraSelect.value, elements.micSelect.value || null);
+        await startStream(elements.cameraSelect.value || null, elements.micSelect.value || null);
     }
 
     function syncFullscreenState() {
@@ -2109,7 +2269,7 @@
         applyOverlayCameraLayout();
         applyOverlayCameraMirror();
 
-        const hasCamera = Boolean(mediaStream);
+        const hasCamera = Boolean(mediaStream?.getVideoTracks().length);
         elements.fullscreenCameraPlaceholder.classList.toggle('hidden', hasCamera);
     }
 
@@ -2118,7 +2278,7 @@
             return;
         }
 
-        layer.querySelectorAll('.bat-effect').forEach((effect) => {
+        layer.querySelectorAll('.bat-effect, .sold-effect').forEach((effect) => {
             effect.remove();
         });
     }
@@ -2130,7 +2290,7 @@
         elements.fullscreenView.classList.add('active');
         setStatus(true);
         syncFullscreenState();
-        refreshStreamCompositorSources();
+        syncStreamVideoBindings();
 
         if (isOutputStreaming) {
             purgeEffectLayer(elements.previewEffectLayer);
@@ -2167,7 +2327,7 @@
         elements.fullscreenView.classList.remove('active');
         elements.console.classList.remove('hidden');
         setStatus(isOutputStreaming);
-        refreshStreamCompositorSources();
+        syncStreamVideoBindings();
 
         if (isOutputStreaming) {
             purgeEffectLayer(elements.fullscreenEffectLayer);
@@ -2427,6 +2587,7 @@
     function saveEffectSettings() {
         const settings = {
             hotkey: effectHotkey,
+            soldHotkey,
             sizeMin: elements.effectSizeMin.value,
             sizeMax: elements.effectSizeMax.value,
             rotationMin: elements.effectRotationMin.value,
@@ -2452,6 +2613,11 @@
             if (settings.hotkey) {
                 effectHotkey = settings.hotkey;
                 elements.hotkeyDisplay.textContent = formatHotkeyLabel(effectHotkey);
+            }
+
+            if (settings.soldHotkey) {
+                soldHotkey = settings.soldHotkey;
+                elements.soldHotkeyDisplay.textContent = formatHotkeyLabel(soldHotkey);
             }
 
             if (settings.sizeMin) elements.effectSizeMin.value = settings.sizeMin;
@@ -2978,7 +3144,20 @@
         });
     }
 
-    function spawnEffectOnLayer(layer) {
+    function getEffectPositionFromPointer(container, clientX, clientY) {
+        const rect = container.getBoundingClientRect();
+
+        if (!rect.width || !rect.height) {
+            return null;
+        }
+
+        return {
+            x: ((clientX - rect.left) / rect.width) * 100,
+            y: ((clientY - rect.top) / rect.height) * 100,
+        };
+    }
+
+    function spawnEffectOnLayer(layer, position = null) {
         if (!effectImages.length) {
             return;
         }
@@ -2988,8 +3167,16 @@
         const size = randomBetween(config.sizeMin, config.sizeMax);
         const rotation = randomBetween(config.rotationMin, config.rotationMax);
         const margin = size / 2 + 5;
-        const x = randomBetween(margin, 100 - margin);
-        const y = randomBetween(margin, 100 - margin);
+        let x;
+        let y;
+
+        if (position && Number.isFinite(position.x) && Number.isFinite(position.y)) {
+            x = Math.max(margin, Math.min(100 - margin, position.x));
+            y = Math.max(margin, Math.min(100 - margin, position.y));
+        } else {
+            x = randomBetween(margin, 100 - margin);
+            y = randomBetween(margin, 100 - margin);
+        }
 
         const effect = document.createElement('img');
         effect.className = 'bat-effect';
@@ -3008,6 +3195,48 @@
         });
     }
 
+    function spawnSoldOnLayer(layer) {
+        layer.querySelectorAll('.sold-effect').forEach((effect) => {
+            effect.remove();
+        });
+
+        const wrap = document.createElement('div');
+        wrap.className = 'sold-effect';
+        wrap.style.setProperty('--sold-spin-duration', `${SOLD_SPIN_MS}ms`);
+        wrap.style.setProperty('--sold-hold-duration', `${SOLD_HOLD_MS}ms`);
+        wrap.dataset.spawnedAt = String(performance.now());
+
+        const effect = document.createElement('img');
+        effect.className = 'sold-effect-img';
+        effect.src = SOLD_IMAGE_URL;
+        effect.alt = 'SOLD!';
+        effect.decoding = 'async';
+
+        wrap.appendChild(effect);
+        layer.appendChild(wrap);
+
+        effect.addEventListener('animationend', (event) => {
+            if (event.animationName === 'sold-hold') {
+                wrap.remove();
+            }
+        });
+    }
+
+    function triggerSoldOverlay() {
+        playEffectSound();
+
+        if (isOutputStreaming) {
+            spawnSoldOnLayer(getActiveStreamElements().effectLayer);
+            return;
+        }
+
+        if (isFullscreen) {
+            spawnSoldOnLayer(elements.fullscreenEffectLayer);
+        } else if (elements.effectPreviewToggle.checked) {
+            spawnSoldOnLayer(elements.previewEffectLayer);
+        }
+    }
+
     function triggerEffect(options = {}) {
         if (!effectImages.length) {
             return;
@@ -3015,15 +3244,17 @@
 
         playEffectSound();
 
+        const position = options.position || null;
+
         if (isOutputStreaming) {
-            spawnEffectOnLayer(getActiveStreamElements().effectLayer);
+            spawnEffectOnLayer(getActiveStreamElements().effectLayer, position);
             return;
         }
 
         if (isFullscreen) {
-            spawnEffectOnLayer(elements.fullscreenEffectLayer);
+            spawnEffectOnLayer(elements.fullscreenEffectLayer, position);
         } else if (elements.effectPreviewToggle.checked || options.fromPreviewTap) {
-            spawnEffectOnLayer(elements.previewEffectLayer);
+            spawnEffectOnLayer(elements.previewEffectLayer, position);
         }
     }
 
@@ -3040,7 +3271,16 @@
             return;
         }
 
-        triggerEffect({ fromPreviewTap: event.currentTarget === elements.previewStreamFrame });
+        const position = getEffectPositionFromPointer(
+            event.currentTarget,
+            event.clientX,
+            event.clientY,
+        );
+
+        triggerEffect({
+            fromPreviewTap: event.currentTarget === elements.previewStreamFrame,
+            position,
+        });
     }
 
     function initStreamTap() {
@@ -3049,25 +3289,48 @@
         });
     }
 
-    function startHotkeyCapture() {
+    function startHotkeyCapture(target = 'effect') {
+        hotkeyCaptureTarget = target;
         isCapturingHotkey = true;
+
+        if (target === 'sold') {
+            elements.soldHotkeySetBtn.classList.add('capturing');
+            elements.soldHotkeyCaptureHint.classList.remove('hidden');
+            elements.soldHotkeyDisplay.textContent = '…';
+            return;
+        }
+
         elements.hotkeySetBtn.classList.add('capturing');
         elements.hotkeyCaptureHint.classList.remove('hidden');
         elements.hotkeyDisplay.textContent = '…';
     }
 
     function finishHotkeyCapture(code) {
-        if (code === 'Escape') {
+        if (hotkeyCaptureTarget === 'sold') {
+            if (code !== 'Escape') {
+                soldHotkey = code;
+                elements.soldHotkeyDisplay.textContent = formatHotkeyLabel(soldHotkey);
+                saveEffectSettings();
+            } else {
+                elements.soldHotkeyDisplay.textContent = formatHotkeyLabel(soldHotkey);
+            }
+
+            elements.soldHotkeySetBtn.classList.remove('capturing');
+            elements.soldHotkeyCaptureHint.classList.add('hidden');
+        } else if (code === 'Escape') {
             elements.hotkeyDisplay.textContent = formatHotkeyLabel(effectHotkey);
+            elements.hotkeySetBtn.classList.remove('capturing');
+            elements.hotkeyCaptureHint.classList.add('hidden');
         } else {
             effectHotkey = code;
             elements.hotkeyDisplay.textContent = formatHotkeyLabel(effectHotkey);
             saveEffectSettings();
+            elements.hotkeySetBtn.classList.remove('capturing');
+            elements.hotkeyCaptureHint.classList.add('hidden');
         }
 
+        hotkeyCaptureTarget = null;
         isCapturingHotkey = false;
-        elements.hotkeySetBtn.classList.remove('capturing');
-        elements.hotkeyCaptureHint.classList.add('hidden');
     }
 
     function isTypingTarget(target) {
@@ -3101,6 +3364,12 @@
         if (event.code === effectHotkey && !event.repeat && !isTypingTarget(event.target)) {
             event.preventDefault();
             triggerEffect();
+            return;
+        }
+
+        if (event.code === soldHotkey && !event.repeat && !isTypingTarget(event.target)) {
+            event.preventDefault();
+            triggerSoldOverlay();
         }
     }
 
@@ -3157,8 +3426,10 @@
     elements.effectImageClearBtn.addEventListener('click', clearEffectImages);
     elements.effectSoundUpload.addEventListener('change', handleEffectSoundUpload);
     elements.effectSoundClearBtn.addEventListener('click', clearEffectSounds);
-    elements.hotkeySetBtn.addEventListener('click', startHotkeyCapture);
+    elements.hotkeySetBtn.addEventListener('click', () => startHotkeyCapture('effect'));
+    elements.soldHotkeySetBtn.addEventListener('click', () => startHotkeyCapture('sold'));
     elements.effectTestBtn.addEventListener('click', triggerEffect);
+    elements.soldTestBtn.addEventListener('click', triggerSoldOverlay);
 
     [
         elements.effectSizeMin,

@@ -48,7 +48,7 @@
                     <div class="setting-group">
                         <label for="camera-select">Camera</label>
                         <select id="camera-select">
-                            <option value="">Loading cameras…</option>
+                            <option value="">None</option>
                         </select>
                     </div>
 
@@ -318,13 +318,25 @@
                                     Show in preview
                                 </label>
                             </div>
+
+                            <div class="setting-group sold-overlay-group">
+                                <label>SOLD overlay</label>
+                                <p class="field-hint">1960s Batman-style spin — centers on screen and whirls into view.</p>
+                                <div class="hotkey-row">
+                                    <button id="sold-hotkey-set-btn" type="button" class="btn btn-secondary hotkey-btn">
+                                        <kbd id="sold-hotkey-display">S</kbd>
+                                    </button>
+                                    <button id="sold-test-btn" type="button" class="btn btn-ghost">Test SOLD</button>
+                                </div>
+                                <p class="field-hint hotkey-hint hidden" id="sold-hotkey-capture-hint">Press any key…</p>
+                            </div>
                         </div>
                     </div>
                 </section>
             </main>
 
             <footer class="console-footer">
-                <p>Press <kbd>Esc</kbd> or <kbd>F</kbd> while fullscreen to return to this console. Press <kbd>Space</kbd> or tap the screen to burst a graphic.</p>
+                <p>Press <kbd>Esc</kbd> or <kbd>F</kbd> while fullscreen to return to this console. Press <kbd>Space</kbd> or tap the screen to burst a graphic. Press <kbd>S</kbd> for the SOLD overlay.</p>
             </footer>
         </div>
 
