@@ -97,6 +97,8 @@
     let micGainNode = null;
     let micAnalyser = null;
     let micMonitorDest = null;
+    let micSourceNode = null;
+    let micLevelData = null;
 
     let cameraDevices = [];
     let micDevices = [];
@@ -701,48 +703,48 @@
     }
 
     function getMicDeviceId() {
-        return elements.micSelect.value
-            || getSelectedMicId(elements.cameraSelect.value)
-            || micDevices[0]?.deviceId
-            || null;
+        if (elements.micSelect.value) {
+            return elements.micSelect.value;
+        }
+
+        return micDevices[0]?.deviceId || null;
     }
 
-    function getMicAudioConstraints(micId) {
+    function getMicAudioConstraints(micId, exact = true) {
         const base = {
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true,
         };
 
-        if (micId) {
-            return { ...base, deviceId: { ideal: micId } };
+        if (!micId) {
+            return base;
         }
 
-        return base;
+        return {
+            ...base,
+            deviceId: exact ? { exact: micId } : { ideal: micId },
+        };
     }
 
-    function getLiveMicrophoneTrack() {
-        const mediaTrack = mediaStream?.getAudioTracks().find((track) => track.readyState === 'live');
-        if (mediaTrack) {
-            return mediaTrack;
+    function trackMatchesMicId(track, micId) {
+        if (!track || !micId) {
+            return false;
         }
 
-        if (streamMicTrack?.readyState === 'live') {
-            return streamMicTrack;
+        try {
+            const settings = track.getSettings?.() || {};
+            return !settings.deviceId || settings.deviceId === micId;
+        } catch {
+            return true;
         }
-
-        return null;
     }
 
-    async function acquireStreamMicrophoneTrack(skipMonitor = false) {
-        const existingTrack = getLiveMicrophoneTrack();
-        if (existingTrack) {
-            if (!skipMonitor) {
-                if (typeof existingTrack.clone === 'function') {
-                    setupMicAudio(existingTrack.clone());
-                }
-            }
-            return existingTrack;
+    async function openSelectedMicrophone(preferredMicId = null) {
+        const micId = preferredMicId || getMicDeviceId();
+
+        if (!micId) {
+            return null;
         }
 
         if (!navigator.mediaDevices?.getUserMedia) {
@@ -751,20 +753,101 @@
 
         try {
             const micStream = await navigator.mediaDevices.getUserMedia({
-                audio: getMicAudioConstraints(getMicDeviceId()),
+                audio: getMicAudioConstraints(micId, true),
+                video: false,
             });
-            streamMicTrack = micStream.getAudioTracks()[0] || null;
+            const track = micStream.getAudioTracks()[0] || null;
 
-            if (streamMicTrack && !skipMonitor && typeof streamMicTrack.clone === 'function') {
-                setupMicAudio(streamMicTrack.clone());
+            if (!track) {
+                return null;
             }
 
+            track.enabled = true;
+
+            if (!trackMatchesMicId(track, micId)) {
+                console.warn('Microphone track deviceId did not match selection; retrying with ideal constraint.');
+                track.stop();
+                const fallbackStream = await navigator.mediaDevices.getUserMedia({
+                    audio: getMicAudioConstraints(micId, false),
+                    video: false,
+                });
+                const fallbackTrack = fallbackStream.getAudioTracks()[0] || null;
+                if (fallbackTrack) {
+                    fallbackTrack.enabled = true;
+                }
+                return fallbackTrack;
+            }
+
+            return track;
+        } catch (exactError) {
+            console.warn('Exact microphone open failed, retrying with ideal:', exactError);
+
+            try {
+                const micStream = await navigator.mediaDevices.getUserMedia({
+                    audio: getMicAudioConstraints(micId, false),
+                    video: false,
+                });
+                const track = micStream.getAudioTracks()[0] || null;
+                if (track) {
+                    track.enabled = true;
+                }
+                return track;
+            } catch (error) {
+                console.error('Microphone open failed:', error);
+                elements.micStatus.textContent = 'Mic denied';
+                return null;
+            }
+        }
+    }
+
+    function getLiveMicrophoneTrack() {
+        const selectedMicId = getMicDeviceId();
+        const mediaTrack = mediaStream?.getAudioTracks().find((track) => track.readyState === 'live');
+
+        if (mediaTrack && trackMatchesMicId(mediaTrack, selectedMicId)) {
+            return mediaTrack;
+        }
+
+        if (streamMicTrack?.readyState === 'live' && trackMatchesMicId(streamMicTrack, selectedMicId)) {
             return streamMicTrack;
-        } catch (error) {
-            console.error('Microphone acquire failed:', error);
-            elements.micStatus.textContent = 'Mic denied';
+        }
+
+        return null;
+    }
+
+    async function acquireStreamMicrophoneTrack(skipMonitor = false) {
+        const selectedMicId = getMicDeviceId();
+        const existingTrack = getLiveMicrophoneTrack();
+
+        if (existingTrack) {
+            if (!skipMonitor) {
+                await setupMicAudio(existingTrack);
+            }
+            return existingTrack;
+        }
+
+        const micTrack = await openSelectedMicrophone(selectedMicId);
+        if (!micTrack) {
             return null;
         }
+
+        streamMicTrack = micTrack;
+
+        if (mediaStream) {
+            mediaStream.getAudioTracks().forEach((track) => {
+                track.stop();
+                mediaStream.removeTrack(track);
+            });
+            mediaStream.addTrack(micTrack);
+        } else {
+            mediaStream = new MediaStream([micTrack]);
+        }
+
+        if (!skipMonitor) {
+            await setupMicAudio(micTrack);
+        }
+
+        return micTrack;
     }
 
     function releaseStreamMicTrack() {
@@ -1554,7 +1637,7 @@
             if (!micTrack) {
                 updateStreamOutputStatus('No microphone — streaming video/effects only.', 'is-error');
             } else if (typeof micTrack.clone === 'function') {
-                setupMicAudio(micTrack.clone());
+                await setupMicAudio(micTrack.clone());
             }
 
             await waitForAnimationFrames(2);
@@ -1769,6 +1852,7 @@
     function saveStreamSettings() {
         const settings = {
             cameraId: elements.cameraSelect.value,
+            micId: elements.micSelect.value,
             overlayEnabled: elements.overlayEnabledToggle.checked,
             overlayCameraId: elements.overlayCameraSelect.value,
             overlayLayout: elements.overlayLayout.value,
@@ -1821,6 +1905,9 @@
             }
             if (typeof settings.cameraId === 'string') {
                 elements.cameraSelect.dataset.savedCameraId = settings.cameraId;
+            }
+            if (typeof settings.micId === 'string') {
+                elements.micSelect.dataset.savedMicId = settings.micId;
             }
         } catch {
             // Ignore invalid saved settings.
@@ -1914,73 +2001,100 @@
     }
 
     function teardownMicAudio() {
-        if (streamAudioMixActive) {
-            return;
-        }
-
         if (levelAnimationId) {
             cancelAnimationFrame(levelAnimationId);
             levelAnimationId = null;
         }
 
-        if (audioContext && audioContext.state !== 'closed') {
-            audioContext.close();
+        if (micSourceNode) {
+            try {
+                micSourceNode.disconnect();
+            } catch {
+                // Already disconnected.
+            }
+            micSourceNode = null;
         }
 
-        audioContext = null;
-        micGainNode = null;
-        micAnalyser = null;
+        if (micGainNode) {
+            try {
+                micGainNode.disconnect();
+            } catch {
+                // Already disconnected.
+            }
+            micGainNode = null;
+        }
+
+        if (micAnalyser) {
+            try {
+                micAnalyser.disconnect();
+            } catch {
+                // Already disconnected.
+            }
+            micAnalyser = null;
+        }
+
         micMonitorDest = null;
         micMonitorTrackId = null;
+        micLevelData = null;
         elements.micLevel.style.width = '0%';
+
+        // Keep shared AudioContext alive for music / stream mix.
+        if (!streamAudioMixActive && !musicMediaSource && audioContext && audioContext.state !== 'closed') {
+            audioContext.close().catch(() => {});
+            audioContext = null;
+        }
     }
 
     function updateMicLevel() {
-        if (!micAnalyser) {
+        if (!micAnalyser || !micLevelData) {
             return;
         }
 
-        const data = new Uint8Array(micAnalyser.frequencyBinCount);
-        micAnalyser.getByteFrequencyData(data);
+        micAnalyser.getByteTimeDomainData(micLevelData);
 
-        let sum = 0;
-        for (let i = 0; i < data.length; i++) {
-            sum += data[i];
+        let sumSquares = 0;
+        for (let i = 0; i < micLevelData.length; i++) {
+            const sample = (micLevelData[i] - 128) / 128;
+            sumSquares += sample * sample;
         }
 
-        const average = sum / data.length;
-        const level = Math.min(100, (average / 128) * 100);
+        const rms = Math.sqrt(sumSquares / micLevelData.length);
+        const level = Math.min(100, rms * 320);
         elements.micLevel.style.width = `${level}%`;
-        elements.micStatus.textContent = level > 3 ? 'Active' : 'Quiet';
+        elements.micStatus.textContent = level > 2 ? 'Active' : 'Quiet';
 
         levelAnimationId = requestAnimationFrame(updateMicLevel);
     }
 
-    function setupMicAudio(audioTrack) {
+    async function setupMicAudio(audioTrack) {
         if (!audioTrack) {
             elements.micStatus.textContent = 'No mic';
             return;
         }
 
-        if (micMonitorTrackId === audioTrack.id && audioContext && audioContext.state !== 'closed') {
+        if (micMonitorTrackId === audioTrack.id && micAnalyser && audioContext && audioContext.state !== 'closed') {
+            if (audioContext.state === 'suspended') {
+                await audioContext.resume();
+            }
             updateMicVolume();
             elements.micStatus.textContent = 'Active';
             return;
         }
 
         teardownMicAudio();
+        await ensureStreamAudioContext();
         micMonitorTrackId = audioTrack.id;
 
-        audioContext = new AudioContext();
         const micStream = new MediaStream([audioTrack]);
-        const source = audioContext.createMediaStreamSource(micStream);
-
+        micSourceNode = audioContext.createMediaStreamSource(micStream);
         micGainNode = audioContext.createGain();
         micAnalyser = audioContext.createAnalyser();
-        micAnalyser.fftSize = 256;
+        micAnalyser.fftSize = 2048;
+        micAnalyser.smoothingTimeConstant = 0.8;
+        micLevelData = new Uint8Array(micAnalyser.fftSize);
         micMonitorDest = audioContext.createMediaStreamDestination();
 
-        source.connect(micGainNode);
+        micSourceNode.connect(micGainNode);
         micGainNode.connect(micAnalyser);
         micGainNode.connect(micMonitorDest);
 
@@ -2053,7 +2167,7 @@
     }
 
     function getSelectedMicId(cameraId) {
-        if (micManuallySelected && elements.micSelect.value) {
+        if (elements.micSelect.value) {
             return elements.micSelect.value;
         }
 
@@ -2067,116 +2181,67 @@
         }
 
         elements.micLinkHint.classList.add('hidden');
-
-        if (elements.micSelect.value) {
-            return elements.micSelect.value;
-        }
-
         return micDevices[0]?.deviceId || null;
     }
 
     async function startStream(cameraId, micId) {
+        const resolvedMicId = micId || getMicDeviceId();
         stopMainStream();
+        releaseStreamMicTrack();
 
-        if (!cameraId) {
-            syncStreamVideoBindings();
-            elements.fullscreenCameraPlaceholder.classList.remove('hidden');
+        let videoTrack = null;
+        let audioTrack = null;
 
-            if (!micId) {
-                return;
-            }
-
+        if (cameraId) {
             try {
-                const micStream = await navigator.mediaDevices.getUserMedia({
-                    audio: getMicAudioConstraints(micId),
+                const cameraStream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        deviceId: { exact: cameraId },
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 },
+                    },
+                    audio: false,
                 });
-                const micTrack = micStream.getAudioTracks()[0];
-
-                if (micTrack) {
-                    mediaStream = new MediaStream([micTrack]);
-                    setupMicAudio(micTrack);
-                    elements.cameraError.classList.add('hidden');
-                    elements.micLinkHint.classList.add('hidden');
-                }
-            } catch (err) {
-                console.error('Microphone-only stream error:', err);
-                elements.micStatus.textContent = 'Error';
+                videoTrack = cameraStream.getVideoTracks()[0] || null;
+                elements.cameraError.classList.add('hidden');
+            } catch (videoErr) {
+                console.error('Camera open error:', videoErr);
+                elements.cameraError.classList.remove('hidden');
             }
-
-            return;
         }
 
-        const videoConstraints = { deviceId: { exact: cameraId }, width: { ideal: 1920 }, height: { ideal: 1080 } };
-
-        const constraints = {
-            video: videoConstraints,
-            audio: getMicAudioConstraints(micId),
-        };
-
-        try {
-            mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-            syncStreamVideoBindings();
-            elements.cameraError.classList.add('hidden');
-            elements.fullscreenCameraPlaceholder.classList.add('hidden');
-
-            const audioTrack = mediaStream.getAudioTracks()[0];
-            setupMicAudio(audioTrack);
-        } catch (err) {
-            console.error('Stream error:', err);
-
-            if (micId) {
-                try {
-                    mediaStream = await navigator.mediaDevices.getUserMedia({
-                        video: videoConstraints,
-                        audio: false,
-                    });
-                    syncStreamVideoBindings();
-                    elements.cameraError.classList.add('hidden');
-                    elements.fullscreenCameraPlaceholder.classList.add('hidden');
-                } catch (videoErr) {
-                    console.error('Camera fallback error:', videoErr);
-                }
-
-                try {
-                    const micStream = await navigator.mediaDevices.getUserMedia({
-                        audio: getMicAudioConstraints(micId),
-                    });
-                    const micTrack = micStream.getAudioTracks()[0];
-                    if (micTrack) {
-                        if (!mediaStream) {
-                            mediaStream = new MediaStream();
-                        }
-
-                        mediaStream.getAudioTracks().forEach((track) => {
-                            track.stop();
-                            mediaStream.removeTrack(track);
-                        });
-                        mediaStream.addTrack(micTrack);
-
-                        if (mediaStream.getVideoTracks().length) {
-                            syncStreamVideoBindings();
-                            elements.cameraError.classList.add('hidden');
-                            elements.fullscreenCameraPlaceholder.classList.add('hidden');
-                        }
-
-                        setupMicAudio(micTrack);
-                        elements.micLinkHint.classList.add('hidden');
-                        return;
-                    }
-                } catch (micErr) {
-                    console.error('Microphone fallback error:', micErr);
-                }
-
-                if (mediaStream) {
-                    elements.micStatus.textContent = 'Mic unavailable';
-                    elements.micLinkHint.classList.add('hidden');
-                    return;
-                }
+        if (resolvedMicId) {
+            audioTrack = await openSelectedMicrophone(resolvedMicId);
+            if (!audioTrack) {
+                elements.micStatus.textContent = 'Mic denied';
             }
+        } else {
+            elements.micStatus.textContent = 'No mic';
+        }
 
-            elements.cameraError.classList.remove('hidden');
-            elements.fullscreenCameraPlaceholder.classList.toggle('hidden', !isFullscreen);
-            elements.micStatus.textContent = 'Error';
+        const tracks = [];
+        if (videoTrack) {
+            tracks.push(videoTrack);
+        }
+        if (audioTrack) {
+            tracks.push(audioTrack);
+        }
+
+        mediaStream = tracks.length ? new MediaStream(tracks) : null;
+        syncStreamVideoBindings();
+
+        if (videoTrack) {
+            elements.fullscreenCameraPlaceholder.classList.add('hidden');
+        } else {
+            elements.fullscreenCameraPlaceholder.classList.remove('hidden');
+        }
+
+        if (audioTrack) {
+            await setupMicAudio(audioTrack);
+            elements.micLinkHint.classList.toggle(
+                'hidden',
+                !findMatchingMic(cameraDevices.find((d) => d.deviceId === cameraId)),
+            );
         }
     }
 
@@ -2184,6 +2249,7 @@
         const selectedCamera = elements.cameraSelect.value;
         const savedCameraId = elements.cameraSelect.dataset.savedCameraId;
         const selectedMic = elements.micSelect.value;
+        const savedMicId = elements.micSelect.dataset.savedMicId;
 
         elements.cameraSelect.innerHTML = [
             '<option value="">None</option>',
@@ -2212,6 +2278,15 @@
 
         if (selectedMic && micDevices.some((d) => d.deviceId === selectedMic)) {
             elements.micSelect.value = selectedMic;
+        } else if (savedMicId !== undefined) {
+            if (savedMicId && micDevices.some((d) => d.deviceId === savedMicId)) {
+                elements.micSelect.value = savedMicId;
+            } else if (micDevices.length) {
+                elements.micSelect.value = micDevices[0].deviceId;
+            }
+            delete elements.micSelect.dataset.savedMicId;
+        } else if (micDevices.length) {
+            elements.micSelect.value = micDevices[0].deviceId;
         }
 
         populateOverlayCameraSelect();
@@ -2222,7 +2297,12 @@
             const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
             tempStream.getTracks().forEach((track) => track.stop());
         } catch {
-            // Permission may be denied; still try to enumerate.
+            try {
+                const micOnly = await navigator.mediaDevices.getUserMedia({ audio: true });
+                micOnly.getTracks().forEach((track) => track.stop());
+            } catch {
+                // Permission may be denied; still try to enumerate.
+            }
         }
 
         const devices = await navigator.mediaDevices.enumerateDevices();
@@ -2231,36 +2311,43 @@
 
         populateDeviceSelects();
 
+        const micId = getMicDeviceId();
+        await startStream(elements.cameraSelect.value || null, micId);
+
         if (elements.cameraSelect.value) {
-            const micId = getSelectedMicId(elements.cameraSelect.value);
-            await startStream(elements.cameraSelect.value, micId);
             await updateOverlayCamera();
         }
     }
 
     async function handleCameraChange() {
-        micManuallySelected = false;
         populateOverlayCameraSelect();
         saveStreamSettings();
 
-        if (!elements.cameraSelect.value) {
-            const micId = elements.micSelect.value || null;
-            await startStream(null, micId);
-            await updateOverlayCamera();
-            syncFullscreenState();
-            return;
+        // Keep the currently selected mic unless this camera has a clear phone-mic match
+        // and the user has not manually picked a mic this session.
+        if (!micManuallySelected) {
+            const matchedMic = findMatchingMic(
+                cameraDevices.find((device) => device.deviceId === elements.cameraSelect.value),
+            );
+            if (matchedMic) {
+                elements.micSelect.value = matchedMic.deviceId;
+                elements.micLinkHint.classList.remove('hidden');
+            } else {
+                elements.micLinkHint.classList.add('hidden');
+            }
         }
 
-        const micId = getSelectedMicId(elements.cameraSelect.value);
-        await startStream(elements.cameraSelect.value, micId);
+        await startStream(elements.cameraSelect.value || null, getMicDeviceId());
         await updateOverlayCamera();
+        syncFullscreenState();
     }
 
     async function handleMicChange() {
         micManuallySelected = true;
         elements.micLinkHint.classList.add('hidden');
+        saveStreamSettings();
 
-        await startStream(elements.cameraSelect.value || null, elements.micSelect.value || null);
+        await startStream(elements.cameraSelect.value || null, getMicDeviceId());
     }
 
     function syncFullscreenState() {
@@ -3263,11 +3350,25 @@
             return;
         }
 
+        if (event.pointerType === 'mouse' && event.button !== 0) {
+            return;
+        }
+
+        if (!event.currentTarget._streamTapActive) {
+            return;
+        }
+
+        event.currentTarget._streamTapActive = false;
+
         if (event.currentTarget === elements.previewStreamFrame && isFullscreen) {
             return;
         }
 
         if (event.currentTarget === elements.fullscreenStreamFrame && !isFullscreen) {
+            return;
+        }
+
+        if (event.target.closest?.('.camera-overlay-wrap')) {
             return;
         }
 
@@ -3285,7 +3386,27 @@
 
     function initStreamTap() {
         getStreamTapTargets().forEach((target) => {
-            target.addEventListener('click', handleStreamTap);
+            target.addEventListener('pointerdown', (event) => {
+                if (event.pointerType === 'mouse' && event.button !== 0) {
+                    return;
+                }
+
+                if (event.target.closest?.('.camera-overlay-wrap')) {
+                    target._streamTapActive = false;
+                    return;
+                }
+
+                target._streamTapActive = true;
+
+                if (event.pointerType === 'touch') {
+                    event.preventDefault();
+                }
+            }, { passive: false });
+
+            target.addEventListener('pointerup', handleStreamTap);
+            target.addEventListener('pointercancel', () => {
+                target._streamTapActive = false;
+            });
         });
     }
 
@@ -3395,6 +3516,12 @@
     initOverlayDrag();
     initStreamTap();
     elements.fullscreenBtn.addEventListener('click', enterFullscreen);
+
+    document.addEventListener('pointerdown', () => {
+        if (audioContext?.state === 'suspended') {
+            void audioContext.resume();
+        }
+    }, { once: false });
 
     document.addEventListener('keydown', handleGlobalKeydown);
 
