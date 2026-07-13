@@ -3238,9 +3238,16 @@
             return null;
         }
 
+        const x = ((clientX - rect.left) / rect.width) * 100;
+        const y = ((clientY - rect.top) / rect.height) * 100;
+
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            return null;
+        }
+
         return {
-            x: ((clientX - rect.left) / rect.width) * 100,
-            y: ((clientY - rect.top) / rect.height) * 100,
+            x: Math.max(0, Math.min(100, x)),
+            y: Math.max(0, Math.min(100, y)),
         };
     }
 
@@ -3253,14 +3260,16 @@
         const config = getEffectConfig();
         const size = randomBetween(config.sizeMin, config.sizeMax);
         const rotation = randomBetween(config.rotationMin, config.rotationMax);
-        const margin = size / 2 + 5;
         let x;
         let y;
 
         if (position && Number.isFinite(position.x) && Number.isFinite(position.y)) {
-            x = Math.max(margin, Math.min(100 - margin, position.x));
-            y = Math.max(margin, Math.min(100 - margin, position.y));
+            // Keep the graphic centered on the click — only nudge if it would leave the frame.
+            const half = size / 2;
+            x = Math.max(half, Math.min(100 - half, position.x));
+            y = Math.max(half, Math.min(100 - half, position.y));
         } else {
+            const margin = size / 2 + 5;
             x = randomBetween(margin, 100 - margin);
             y = randomBetween(margin, 100 - margin);
         }
@@ -3274,6 +3283,10 @@
         effect.style.setProperty('--effect-y', `${y}%`);
         effect.style.setProperty('--effect-rotation', `${rotation}deg`);
         effect.style.setProperty('--effect-duration', `${config.duration}s`);
+        // Set left/top directly so position works even if CSS variables are cached oddly.
+        effect.style.left = `${x}%`;
+        effect.style.top = `${y}%`;
+        effect.style.width = `${size}%`;
 
         layer.appendChild(effect);
 
@@ -3354,12 +3367,6 @@
             return;
         }
 
-        if (!event.currentTarget._streamTapActive) {
-            return;
-        }
-
-        event.currentTarget._streamTapActive = false;
-
         if (event.currentTarget === elements.previewStreamFrame && isFullscreen) {
             return;
         }
@@ -3378,6 +3385,10 @@
             event.clientY,
         );
 
+        if (!position) {
+            return;
+        }
+
         triggerEffect({
             fromPreviewTap: event.currentTarget === elements.previewStreamFrame,
             position,
@@ -3386,27 +3397,19 @@
 
     function initStreamTap() {
         getStreamTapTargets().forEach((target) => {
+            // Spawn on press so coordinates match the finger/cursor exactly
+            // (pointerup can lose position on some mobile/GitHub Pages browsers).
             target.addEventListener('pointerdown', (event) => {
-                if (event.pointerType === 'mouse' && event.button !== 0) {
-                    return;
-                }
-
                 if (event.target.closest?.('.camera-overlay-wrap')) {
-                    target._streamTapActive = false;
                     return;
                 }
-
-                target._streamTapActive = true;
 
                 if (event.pointerType === 'touch') {
                     event.preventDefault();
                 }
-            }, { passive: false });
 
-            target.addEventListener('pointerup', handleStreamTap);
-            target.addEventListener('pointercancel', () => {
-                target._streamTapActive = false;
-            });
+                handleStreamTap(event);
+            }, { passive: false });
         });
     }
 

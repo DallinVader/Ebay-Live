@@ -299,6 +299,7 @@ body {
     color: var(--accent);
     font-size: 0.9rem;
     background: rgba(0, 0, 0, 0.7);
+    pointer-events: none;
 }
 
 .hint,
