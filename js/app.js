@@ -36,6 +36,7 @@
         mirrorToggle: document.getElementById('mirror-toggle'),
         showOverlayToggle: document.getElementById('show-overlay-toggle'),
         fullscreenBtn: document.getElementById('fullscreen-btn'),
+        assetResetBtn: document.getElementById('asset-reset-btn'),
         streamStatus: document.getElementById('stream-status'),
         streamUrl: document.getElementById('stream-url'),
         streamKey: document.getElementById('stream-key'),
@@ -71,6 +72,10 @@
         soldHotkeyDisplay: document.getElementById('sold-hotkey-display'),
         soldHotkeyCaptureHint: document.getElementById('sold-hotkey-capture-hint'),
         soldTestBtn: document.getElementById('sold-test-btn'),
+        soldImageUpload: document.getElementById('sold-image-upload'),
+        soldImageResetBtn: document.getElementById('sold-image-reset-btn'),
+        soldImagePreview: document.getElementById('sold-image-preview'),
+        soldImageName: document.getElementById('sold-image-name'),
         effectTestBtn: document.getElementById('effect-test-btn'),
         effectSizeMin: document.getElementById('effect-size-min'),
         effectSizeMax: document.getElementById('effect-size-max'),
@@ -113,7 +118,7 @@
     let hotkeyCaptureTarget = null;
     let isCapturingHotkey = false;
     let effectIdCounter = 0;
-    const sessionHiddenFolderMedia = {
+    const hiddenFolderMedia = {
         Images: new Set(),
         Sound: new Set(),
         Music: new Set(),
@@ -140,6 +145,11 @@
     let suppressStreamTap = false;
 
     const EFFECT_SETTINGS_KEY = 'ebayLiveEffectSettings';
+    const SOLD_IMAGE_SETTINGS_KEY = 'ebayLiveSoldImage';
+    const HIDDEN_MEDIA_KEY = 'ebayLiveHiddenMedia';
+    const ASSET_DB_NAME = 'ebayLiveAssetCache';
+    const ASSET_DB_VERSION = 1;
+    const ASSET_STORE_NAME = 'uploads';
     const SOLD_SPIN_MS = 580;
     const SOLD_HOLD_MS = 2200;
     const SOLD_MAX_SCALE = 3.85;
@@ -175,6 +185,238 @@
     }
 
     const SOLD_IMAGE_URL = appPath('Images/Sold.png');
+    let soldImageUrl = SOLD_IMAGE_URL;
+    let soldImageName = 'Sold.png';
+    let soldImageIsCustom = false;
+    let assetDbPromise = null;
+
+    function openAssetDb() {
+        if (assetDbPromise) {
+            return assetDbPromise;
+        }
+
+        assetDbPromise = new Promise((resolve, reject) => {
+            const request = indexedDB.open(ASSET_DB_NAME, ASSET_DB_VERSION);
+
+            request.onupgradeneeded = () => {
+                const db = request.result;
+                if (!db.objectStoreNames.contains(ASSET_STORE_NAME)) {
+                    db.createObjectStore(ASSET_STORE_NAME, { keyPath: 'id' });
+                }
+            };
+
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error || new Error('Failed to open asset cache'));
+        });
+
+        return assetDbPromise;
+    }
+
+    async function assetDbRequest(mode, operation) {
+        const db = await openAssetDb();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(ASSET_STORE_NAME, mode);
+            const store = tx.objectStore(ASSET_STORE_NAME);
+            const request = operation(store);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error || new Error('Asset cache request failed'));
+        });
+    }
+
+    async function saveUploadedAssetRecord(record) {
+        await assetDbRequest('readwrite', (store) => store.put(record));
+    }
+
+    async function deleteUploadedAssetRecord(id) {
+        await assetDbRequest('readwrite', (store) => store.delete(id));
+    }
+
+    async function clearUploadedAssetRecords() {
+        await assetDbRequest('readwrite', (store) => store.clear());
+    }
+
+    async function listUploadedAssetRecords() {
+        const records = await assetDbRequest('readonly', (store) => store.getAll());
+        return Array.isArray(records) ? records : [];
+    }
+
+    function saveHiddenFolderMedia() {
+        const payload = {
+            Images: [...hiddenFolderMedia.Images],
+            Sound: [...hiddenFolderMedia.Sound],
+            Music: [...hiddenFolderMedia.Music],
+        };
+        localStorage.setItem(HIDDEN_MEDIA_KEY, JSON.stringify(payload));
+    }
+
+    function loadHiddenFolderMedia() {
+        try {
+            const raw = localStorage.getItem(HIDDEN_MEDIA_KEY);
+            if (!raw) {
+                return;
+            }
+
+            const parsed = JSON.parse(raw);
+            ['Images', 'Sound', 'Music'].forEach((folder) => {
+                hiddenFolderMedia[folder] = new Set(
+                    Array.isArray(parsed?.[folder]) ? parsed[folder] : [],
+                );
+            });
+        } catch {
+            // Ignore invalid hidden-media cache.
+        }
+    }
+
+    function clearHiddenFolderMedia() {
+        hiddenFolderMedia.Images.clear();
+        hiddenFolderMedia.Sound.clear();
+        hiddenFolderMedia.Music.clear();
+        localStorage.removeItem(HIDDEN_MEDIA_KEY);
+    }
+
+    function bumpIdCounterFromAssetId(id, prefix, counterRef) {
+        if (!id?.startsWith(prefix)) {
+            return counterRef;
+        }
+
+        const value = Number(id.slice(prefix.length));
+        return Number.isFinite(value) ? Math.max(counterRef, value) : counterRef;
+    }
+
+    async function restoreUploadedAssetsFromCache() {
+        try {
+            const records = await listUploadedAssetRecords();
+            const images = [];
+            const sounds = [];
+            const tracks = [];
+
+            records.forEach((record) => {
+                if (!record?.id || !record.blob) {
+                    return;
+                }
+
+                const url = URL.createObjectURL(record.blob);
+                const item = {
+                    id: record.id,
+                    name: record.name || 'Upload',
+                    url,
+                    isDefault: false,
+                    cached: true,
+                };
+
+                if (record.kind === 'image') {
+                    images.push(item);
+                    effectIdCounter = bumpIdCounterFromAssetId(record.id, 'effect-', effectIdCounter);
+                } else if (record.kind === 'sound') {
+                    sounds.push(item);
+                    effectIdCounter = bumpIdCounterFromAssetId(record.id, 'sound-', effectIdCounter);
+                } else if (record.kind === 'music') {
+                    tracks.push(item);
+                    musicIdCounter = bumpIdCounterFromAssetId(record.id, 'music-', musicIdCounter);
+                }
+            });
+
+            effectImages = [...effectImages.filter((item) => item.isDefault), ...images];
+            effectSounds = [...effectSounds.filter((item) => item.isDefault), ...sounds];
+            musicTracks = [...musicTracks.filter((item) => item.isDefault), ...tracks];
+        } catch (error) {
+            console.warn('Could not restore uploaded assets from cache:', error);
+        }
+    }
+
+    async function cacheUploadedFile(kind, file) {
+        let id;
+        if (kind === 'music') {
+            id = `music-${++musicIdCounter}`;
+        } else if (kind === 'sound') {
+            id = `sound-${++effectIdCounter}`;
+        } else {
+            id = `effect-${++effectIdCounter}`;
+        }
+
+        const url = URL.createObjectURL(file);
+        const item = {
+            id,
+            name: file.name,
+            url,
+            isDefault: false,
+            cached: true,
+        };
+
+        try {
+            await saveUploadedAssetRecord({
+                id,
+                kind,
+                name: file.name,
+                type: file.type || 'application/octet-stream',
+                blob: file,
+            });
+        } catch (error) {
+            console.warn('Could not cache uploaded file:', error);
+        }
+
+        return item;
+    }
+
+    async function uncacheUploadedAsset(id, url) {
+        if (url?.startsWith('blob:')) {
+            URL.revokeObjectURL(url);
+        }
+
+        try {
+            await deleteUploadedAssetRecord(id);
+        } catch (error) {
+            console.warn('Could not remove cached upload:', error);
+        }
+    }
+
+    async function resetAllAssets() {
+        const confirmed = window.confirm(
+            'Reset all assets to defaults?\n\nThis removes uploaded Images, Sounds, and Music from cache, restores any hidden preset files, and resets the SOLD graphic.',
+        );
+
+        if (!confirmed) {
+            return;
+        }
+
+        if (currentMusicId) {
+            stopMusic();
+            currentMusicId = null;
+        }
+
+        effectImages.filter((item) => !item.isDefault).forEach((item) => {
+            if (item.url?.startsWith('blob:')) {
+                URL.revokeObjectURL(item.url);
+            }
+        });
+        effectSounds.filter((item) => !item.isDefault).forEach((item) => {
+            if (item.url?.startsWith('blob:')) {
+                URL.revokeObjectURL(item.url);
+            }
+        });
+        musicTracks.filter((item) => !item.isDefault).forEach((item) => {
+            if (item.url?.startsWith('blob:')) {
+                URL.revokeObjectURL(item.url);
+            }
+        });
+
+        effectImages = [];
+        effectSounds = [];
+        musicTracks = [];
+        effectSoundBufferCache.clear();
+        resetSoundRepeatTracking();
+        clearHiddenFolderMedia();
+        resetSoldImage();
+
+        try {
+            await clearUploadedAssetRecords();
+        } catch (error) {
+            console.warn('Could not clear asset cache:', error);
+        }
+
+        await refreshAllMediaFromFolders();
+        updateMusicControls();
+    }
 
     const MEDIA_FOLDERS = ['Images', 'Sound', 'Music'];
     const FOLDER_TYPES = {
@@ -2506,20 +2748,19 @@
             return;
         }
 
-        files.forEach((file) => {
-            if (!file.type.startsWith('audio/')) {
-                return;
+        void (async () => {
+            for (const file of files) {
+                if (!file.type.startsWith('audio/')) {
+                    continue;
+                }
+
+                const track = await cacheUploadedFile('music', file);
+                musicTracks.push(track);
             }
 
-            musicTracks.push({
-                id: `music-${++musicIdCounter}`,
-                name: file.name,
-                url: URL.createObjectURL(file),
-                isDefault: false,
-            });
-        });
+            renderMusicList();
+        })();
 
-        renderMusicList();
         event.target.value = '';
     }
 
@@ -2528,7 +2769,7 @@
         if (track?.isDefault) {
             hideFolderMediaItem('Music', track.name);
         } else if (track) {
-            URL.revokeObjectURL(track.url);
+            void uncacheUploadedAsset(track.id, track.url);
         }
 
         if (currentMusicId === id) {
@@ -2550,7 +2791,7 @@
             if (track.isDefault) {
                 hideFolderMediaItem('Music', track.name);
             } else {
-                URL.revokeObjectURL(track.url);
+                void uncacheUploadedAsset(track.id, track.url);
             }
         });
 
@@ -2894,11 +3135,12 @@
     }
 
     function hideFolderMediaItem(folderName, fileName) {
-        sessionHiddenFolderMedia[folderName].add(fileName);
+        hiddenFolderMedia[folderName].add(fileName);
+        saveHiddenFolderMedia();
     }
 
     function filterVisibleFolderFiles(folderName, files) {
-        const hidden = sessionHiddenFolderMedia[folderName];
+        const hidden = hiddenFolderMedia[folderName];
         return files.filter((name) => !hidden.has(name));
     }
 
@@ -2974,7 +3216,7 @@
             if (image.isDefault) {
                 hideFolderMediaItem('Images', image.name);
             } else {
-                URL.revokeObjectURL(image.url);
+                void uncacheUploadedAsset(image.id, image.url);
             }
         });
 
@@ -2988,20 +3230,19 @@
             return;
         }
 
-        files.forEach((file) => {
-            if (!file.type.startsWith('image/')) {
-                return;
+        void (async () => {
+            for (const file of files) {
+                if (!file.type.startsWith('image/')) {
+                    continue;
+                }
+
+                const image = await cacheUploadedFile('image', file);
+                effectImages.push(image);
             }
 
-            effectImages.push({
-                id: `effect-${++effectIdCounter}`,
-                name: file.name,
-                url: URL.createObjectURL(file),
-                isDefault: false,
-            });
-        });
+            renderEffectImageList();
+        })();
 
-        renderEffectImageList();
         event.target.value = '';
     }
 
@@ -3010,7 +3251,7 @@
         if (image?.isDefault) {
             hideFolderMediaItem('Images', image.name);
         } else if (image) {
-            URL.revokeObjectURL(image.url);
+            void uncacheUploadedAsset(image.id, image.url);
         }
 
         effectImages = effectImages.filter((item) => item.id !== id);
@@ -3040,7 +3281,8 @@
             if (sound.isDefault) {
                 hideFolderMediaItem('Sound', sound.name);
             } else {
-                URL.revokeObjectURL(sound.url);
+                effectSoundBufferCache.delete(sound.url);
+                void uncacheUploadedAsset(sound.id, sound.url);
             }
         });
 
@@ -3055,20 +3297,19 @@
             return;
         }
 
-        files.forEach((file) => {
-            if (!file.type.startsWith('audio/')) {
-                return;
+        void (async () => {
+            for (const file of files) {
+                if (!file.type.startsWith('audio/')) {
+                    continue;
+                }
+
+                const sound = await cacheUploadedFile('sound', file);
+                effectSounds.push(sound);
             }
 
-            effectSounds.push({
-                id: `sound-${++effectIdCounter}`,
-                name: file.name,
-                url: URL.createObjectURL(file),
-                isDefault: false,
-            });
-        });
+            renderEffectSoundList();
+        })();
 
-        renderEffectSoundList();
         event.target.value = '';
     }
 
@@ -3077,7 +3318,8 @@
         if (sound?.isDefault) {
             hideFolderMediaItem('Sound', sound.name);
         } else if (sound) {
-            URL.revokeObjectURL(sound.url);
+            effectSoundBufferCache.delete(sound.url);
+            void uncacheUploadedAsset(sound.id, sound.url);
         }
 
         effectSounds = effectSounds.filter((item) => item.id !== id);
@@ -3295,6 +3537,91 @@
         });
     }
 
+    function getSoldImageUrl() {
+        return soldImageUrl || SOLD_IMAGE_URL;
+    }
+
+    function updateSoldImageUi() {
+        if (elements.soldImagePreview) {
+            elements.soldImagePreview.src = getSoldImageUrl();
+        }
+
+        if (elements.soldImageName) {
+            elements.soldImageName.textContent = soldImageIsCustom
+                ? `Custom: ${soldImageName}`
+                : 'Default: Sold.png';
+        }
+
+        if (elements.soldImageResetBtn) {
+            elements.soldImageResetBtn.disabled = !soldImageIsCustom;
+        }
+    }
+
+    function setSoldImage(dataUrl, name) {
+        soldImageUrl = dataUrl;
+        soldImageName = name || 'Custom image';
+        soldImageIsCustom = true;
+        updateSoldImageUi();
+
+        try {
+            localStorage.setItem(SOLD_IMAGE_SETTINGS_KEY, JSON.stringify({
+                name: soldImageName,
+                dataUrl,
+            }));
+        } catch (error) {
+            console.warn('Could not save custom SOLD image (storage full?):', error);
+        }
+    }
+
+    function resetSoldImage() {
+        soldImageUrl = SOLD_IMAGE_URL;
+        soldImageName = 'Sold.png';
+        soldImageIsCustom = false;
+        updateSoldImageUi();
+        localStorage.removeItem(SOLD_IMAGE_SETTINGS_KEY);
+    }
+
+    function loadSoldImageSettings() {
+        try {
+            const raw = localStorage.getItem(SOLD_IMAGE_SETTINGS_KEY);
+            if (!raw) {
+                updateSoldImageUi();
+                return;
+            }
+
+            const settings = JSON.parse(raw);
+            if (settings?.dataUrl) {
+                soldImageUrl = settings.dataUrl;
+                soldImageName = settings.name || 'Custom image';
+                soldImageIsCustom = true;
+            }
+        } catch {
+            // Ignore invalid saved image.
+        }
+
+        updateSoldImageUi();
+    }
+
+    function handleSoldImageUpload(event) {
+        const file = event.target.files?.[0];
+        event.target.value = '';
+
+        if (!file || !file.type.startsWith('image/')) {
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = () => {
+            if (typeof reader.result === 'string') {
+                setSoldImage(reader.result, file.name);
+            }
+        };
+        reader.onerror = () => {
+            console.error('Failed to read SOLD image upload');
+        };
+        reader.readAsDataURL(file);
+    }
+
     function spawnSoldOnLayer(layer) {
         layer.querySelectorAll('.sold-effect').forEach((effect) => {
             effect.remove();
@@ -3308,8 +3635,8 @@
 
         const effect = document.createElement('img');
         effect.className = 'sold-effect-img';
-        effect.src = SOLD_IMAGE_URL;
-        effect.alt = 'SOLD!';
+        effect.src = getSoldImageUrl();
+        effect.alt = soldImageIsCustom ? soldImageName : 'SOLD!';
         effect.decoding = 'async';
 
         wrap.appendChild(effect);
@@ -3519,6 +3846,9 @@
     initOverlayDrag();
     initStreamTap();
     elements.fullscreenBtn.addEventListener('click', enterFullscreen);
+    elements.assetResetBtn.addEventListener('click', () => {
+        void resetAllAssets();
+    });
 
     document.addEventListener('pointerdown', () => {
         if (audioContext?.state === 'suspended') {
@@ -3560,6 +3890,8 @@
     elements.soldHotkeySetBtn.addEventListener('click', () => startHotkeyCapture('sold'));
     elements.effectTestBtn.addEventListener('click', triggerEffect);
     elements.soldTestBtn.addEventListener('click', triggerSoldOverlay);
+    elements.soldImageUpload.addEventListener('change', handleSoldImageUpload);
+    elements.soldImageResetBtn.addEventListener('click', resetSoldImage);
 
     [
         elements.effectSizeMin,
@@ -3601,7 +3933,14 @@
     loadMusicSettings();
     updateMicVolume();
     loadEffectSettings();
-    refreshAllMediaFromFolders();
+    loadSoldImageSettings();
+    loadHiddenFolderMedia();
+
+    void (async () => {
+        await restoreUploadedAssetsFromCache();
+        await refreshAllMediaFromFolders();
+    })();
+
     initMediaRefresh();
 
     if (navigator.mediaDevices?.getUserMedia) {
