@@ -1746,6 +1746,75 @@
         });
     }
 
+    function configureWhipCodecPreferences(peerConnection) {
+        peerConnection.getTransceivers().forEach((transceiver) => {
+            const kind = transceiver.sender.track?.kind;
+            if (!kind || typeof transceiver.setCodecPreferences !== 'function') {
+                return;
+            }
+
+            const capabilities = RTCRtpSender.getCapabilities?.(kind);
+            if (!capabilities?.codecs?.length) {
+                return;
+            }
+
+            const preferredMimeType = kind === 'video' ? 'video/h264' : 'audio/opus';
+            let preferredCodecs = capabilities.codecs.filter(
+                (codec) => codec.mimeType.toLowerCase() === preferredMimeType,
+            );
+
+            if (!preferredCodecs.length) {
+                throw new Error(
+                    kind === 'video'
+                        ? 'This browser cannot encode the H.264 video required by eBay Live.'
+                        : 'This browser cannot encode the Opus audio required by WHIP.',
+                );
+            }
+
+            if (kind === 'video') {
+                const baselineCodecs = preferredCodecs.filter((codec) => {
+                    const fmtp = codec.sdpFmtpLine?.toLowerCase() || '';
+                    return fmtp.includes('packetization-mode=1')
+                        && (
+                            fmtp.includes('profile-level-id=42e0')
+                            || fmtp.includes('profile-level-id=4200')
+                        );
+                });
+                if (baselineCodecs.length) {
+                    preferredCodecs = baselineCodecs;
+                }
+
+                preferredCodecs.sort((left, right) => {
+                    const score = (codec) => {
+                        const fmtp = codec.sdpFmtpLine?.toLowerCase() || '';
+                        if (fmtp.includes('packetization-mode=1') && fmtp.includes('profile-level-id=42e0')) {
+                            return 0;
+                        }
+                        if (fmtp.includes('packetization-mode=1') && fmtp.includes('profile-level-id=4200')) {
+                            return 1;
+                        }
+                        return fmtp.includes('packetization-mode=1') ? 2 : 3;
+                    };
+
+                    return score(left) - score(right);
+                });
+            }
+
+            const recoveryMimeTypes = new Set(['video/rtx', 'video/red', 'video/ulpfec']);
+            const recoveryCodecs = kind === 'video'
+                ? capabilities.codecs.filter(
+                    (codec) => recoveryMimeTypes.has(codec.mimeType.toLowerCase()),
+                )
+                : [];
+
+            try {
+                transceiver.setCodecPreferences([...preferredCodecs, ...recoveryCodecs]);
+            } catch (error) {
+                console.warn(`Could not prefer ${preferredMimeType} for WHIP:`, error);
+            }
+        });
+    }
+
     function stopWhipKeyframePump() {
         if (whipKeyframeTimer) {
             window.clearInterval(whipKeyframeTimer);
@@ -1771,6 +1840,7 @@
             }
         };
 
+        void requestKeyframe();
         whipKeyframeTimer = window.setInterval(() => {
             void requestKeyframe();
         }, 2000);
@@ -1787,6 +1857,8 @@
         stopWhipStatsMonitor();
         let previousBytes = 0;
         let previousFrames = 0;
+        let previousPacketsSent = 0;
+        let previousPacketsLost = 0;
         let previousTimestamp = 0;
 
         const updateStats = async () => {
@@ -1817,19 +1889,42 @@
                     : outbound.framesPerSecond || 0;
                 const fps = outbound.framesPerSecond || measuredFps;
                 const limitation = outbound.qualityLimitationReason;
+                const codec = outbound.codecId ? report.get(outbound.codecId) : null;
+                const codecName = codec?.mimeType?.split('/').at(-1)?.toUpperCase() || 'VIDEO';
+                const remoteInbound = outbound.remoteId
+                    ? report.get(outbound.remoteId)
+                    : [...report.values()].find((entry) => (
+                        entry.type === 'remote-inbound-rtp'
+                        && (entry.kind === 'video' || entry.mediaType === 'video')
+                    ));
+                const packetsSent = outbound.packetsSent || 0;
+                const packetsLost = Math.max(0, remoteInbound?.packetsLost || 0);
+                const packetDelta = Math.max(0, packetsSent - previousPacketsSent);
+                const lostDelta = Math.max(0, packetsLost - previousPacketsLost);
+                const lossPercent = packetDelta + lostDelta > 0
+                    ? (lostDelta / (packetDelta + lostDelta)) * 100
+                    : 0;
+                const lossText = previousTimestamp && lossPercent >= 0.1
+                    ? ` • ${lossPercent.toFixed(1)}% loss`
+                    : '';
+                const dimensions = outbound.frameWidth && outbound.frameHeight
+                    ? ` • ${outbound.frameWidth}×${outbound.frameHeight}`
+                    : '';
                 const limitedText = limitation && limitation !== 'none'
                     ? ` • limited by ${limitation}`
                     : '';
 
                 if (previousTimestamp) {
                     updateStreamOutputStatus(
-                        `WHIP ${bitrateMbps.toFixed(1)} Mbps • ${Math.round(fps)} FPS${limitedText}`,
+                        `WHIP ${codecName} • ${bitrateMbps.toFixed(1)} Mbps • ${Math.round(fps)} FPS${dimensions}${lossText}${limitedText}`,
                         limitation && limitation !== 'none' ? 'is-error' : 'is-live',
                     );
                 }
 
                 previousBytes = outbound.bytesSent;
                 previousFrames = outbound.framesEncoded;
+                previousPacketsSent = packetsSent;
+                previousPacketsLost = packetsLost;
                 previousTimestamp = outbound.timestamp;
             } catch (error) {
                 console.warn('Could not read WHIP stream stats:', error);
@@ -1898,6 +1993,7 @@
                 });
             });
 
+            configureWhipCodecPreferences(peerConnection);
             const offer = await peerConnection.createOffer();
             await peerConnection.setLocalDescription(offer);
             await waitForIceGatheringComplete(peerConnection);
