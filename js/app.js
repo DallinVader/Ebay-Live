@@ -870,7 +870,14 @@
         streamCanvas.height = outputHeight;
         attachStreamCanvasToDom();
 
-        const ctx = streamCanvas.getContext('2d');
+        const ctx = streamCanvas.getContext('2d', {
+            alpha: false,
+            desynchronized: false,
+        });
+
+        if (!ctx) {
+            throw new Error('Could not create the stream compositor.');
+        }
 
         streamCompositorState = {
             ctx,
@@ -1260,7 +1267,7 @@
             streamAnimationId = null;
         }
 
-        whipFrameTimer = window.setInterval(() => {
+        const renderFrame = () => {
             if (!streamCompositorState) {
                 return;
             }
@@ -1274,12 +1281,16 @@
                     // Ignore requestFrame errors.
                 }
             }
-        }, 42);
+
+            whipFrameTimer = window.setTimeout(renderFrame, 42);
+        };
+
+        renderFrame();
     }
 
     function stopWhipFramePump() {
         if (whipFrameTimer) {
-            window.clearInterval(whipFrameTimer);
+            window.clearTimeout(whipFrameTimer);
             whipFrameTimer = null;
         }
     }
@@ -1293,8 +1304,23 @@
 
     function getCanvasCaptureStream() {
         if (!streamCanvasCaptureStream) {
-            streamCanvasCaptureStream = streamCanvas.captureStream(30);
+            // Use manual capture only. Combining captureStream(30) with requestFrame()
+            // creates competing frame clocks and can produce corrupted/green frames.
+            streamCanvasCaptureStream = streamCanvas.captureStream(0);
             streamPublishVideoTrack = streamCanvasCaptureStream.getVideoTracks()[0] || null;
+
+            if (streamPublishVideoTrack && typeof streamPublishVideoTrack.requestFrame === 'function') {
+                streamPublishVideoTrack.contentHint = 'motion';
+                streamPublishVideoTrack.requestFrame();
+            } else {
+                streamPublishVideoTrack?.stop();
+                streamCanvasCaptureStream = streamCanvas.captureStream(24);
+                streamPublishVideoTrack = streamCanvasCaptureStream.getVideoTracks()[0] || null;
+
+                if (streamPublishVideoTrack) {
+                    streamPublishVideoTrack.contentHint = 'motion';
+                }
+            }
         }
 
         return streamCanvasCaptureStream;
@@ -1596,7 +1622,9 @@
 
             params.encodings[0].maxBitrate = 2500000;
             params.encodings[0].maxFramerate = 24;
-            params.degradationPreference = 'balanced';
+            // Keep 720x1280 stable. Resolution changes under congestion can make
+            // some WHIP ingest decoders flash green while reinitializing.
+            params.degradationPreference = 'maintain-resolution';
 
             try {
                 await videoSender.setParameters(params);
