@@ -63,13 +63,13 @@
                     </div>
 
                     <div class="setting-group">
-                        <label for="camera-resolution">Stream output quality</label>
+                        <label for="camera-resolution">Adaptive quality ceiling</label>
                         <select id="camera-resolution">
-                            <option value="low">Low — 360×640 output (fastest)</option>
-                            <option value="medium" selected>Medium — 540×960 output</option>
-                            <option value="high">High — 720×1280 output</option>
+                            <option value="low">Low — up to 360×640</option>
+                            <option value="medium">Medium — up to 540×960</option>
+                            <option value="high" selected>High — up to 720×1280</option>
                         </select>
-                        <p class="field-hint">Controls the final combined stream sent to eBay.</p>
+                        <p class="field-hint">Automatically steps down when bandwidth or CPU is limited.</p>
                     </div>
 
                     <div class="setting-subsection">
@@ -168,14 +168,6 @@
                         <h3>eBay Live stream</h3>
 
                         <div class="setting-group">
-                            <label for="stream-protocol">Ingest protocol</label>
-                            <select id="stream-protocol">
-                                <option value="whip" selected>WHIP — low latency (best for live auctions)</option>
-                                <option value="rtmp">RTMP — reliable (via local FFmpeg relay)</option>
-                            </select>
-                        </div>
-
-                        <div class="setting-group">
                             <label for="stream-url">Stream URL</label>
                             <input type="text" id="stream-url" placeholder="https://stream.us.shoplive.cloud:4334/stream" autocomplete="off" spellcheck="false">
                         </div>
@@ -185,7 +177,7 @@
                             <input type="password" id="stream-key" placeholder="Paste key from eBay Live" autocomplete="off" spellcheck="false">
                         </div>
 
-                        <p class="field-hint" id="stream-protocol-hint">WHIP streams directly from your browser to eBay with minimal delay — no FFmpeg or dev server needed. Use the HTTPS ingest URL and key from Seller Hub.</p>
+                        <p class="field-hint">WHIP streams directly from your browser to eBay with minimal delay. Use the HTTPS ingest URL and key from Seller Hub.</p>
 
                         <div class="stream-actions">
                             <button id="stream-start-btn" type="button" class="btn btn-primary">Start streaming</button>
@@ -402,6 +394,6 @@
 
     <audio id="music-player"></audio>
 
-    <script src="js/app.js?v=20260715g"></script>
+    <script type="module" src="js/app.js?v=20260715i"></script>
 </body>
 </html>

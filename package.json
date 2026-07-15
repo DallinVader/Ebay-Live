@@ -1,8 +1,9 @@
 {
     "name": "ebay-live-console",
     "private": true,
-    "description": "eBay Live stream console with local RTMP relay",
-    "dependencies": {
-        "ws": "^8.18.1"
+    "description": "Browser-based eBay Live stream console",
+    "scripts": {
+        "test": "node --test tests/*.test.js",
+        "check": "node --check js/app.js"
     }
 }
