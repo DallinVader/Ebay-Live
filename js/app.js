@@ -13,8 +13,11 @@
         cameraFullscreen: document.getElementById('camera-fullscreen'),
         fullscreenCameraPlaceholder: document.getElementById('fullscreen-camera-placeholder'),
         cameraSelect: document.getElementById('camera-select'),
+        mainCameraResolution: document.getElementById('main-camera-resolution'),
+        cameraResolution: document.getElementById('camera-resolution'),
         overlayEnabledToggle: document.getElementById('overlay-enabled-toggle'),
         overlayCameraSelect: document.getElementById('overlay-camera-select'),
+        overlayCameraResolution: document.getElementById('overlay-camera-resolution'),
         overlayLayout: document.getElementById('overlay-layout'),
         overlayAspect: document.getElementById('overlay-aspect'),
         overlaySize: document.getElementById('overlay-size'),
@@ -156,11 +159,49 @@
     const MUSIC_SETTINGS_KEY = 'ebayLiveMusicSettings';
     const STREAM_SETTINGS_KEY = 'ebayLiveStreamSettings';
     const STREAM_OUTPUT_SETTINGS_KEY = 'ebayLiveStreamOutputSettings';
-    const STREAM_CANVAS_WIDTH = 1080;
-    const STREAM_CANVAS_HEIGHT = 1920;
-    const STREAM_OUTPUT_WIDTH = 720;
-    const STREAM_OUTPUT_HEIGHT = 1280;
+    const CAMERA_QUALITY_PRESETS = {
+        low: {
+            cameraWidth: 640,
+            cameraHeight: 360,
+            outputWidth: 360,
+            outputHeight: 640,
+            maxBitrate: 1500000,
+            frameRate: 24,
+        },
+        medium: {
+            cameraWidth: 1280,
+            cameraHeight: 720,
+            outputWidth: 540,
+            outputHeight: 960,
+            maxBitrate: 3000000,
+            frameRate: 30,
+        },
+        high: {
+            cameraWidth: 1920,
+            cameraHeight: 1080,
+            outputWidth: 720,
+            outputHeight: 1280,
+            maxBitrate: 5400000,
+            frameRate: 30,
+        },
+    };
+    const DEFAULT_CAMERA_QUALITY = 'medium';
     const REPO_CONFIG = { owner: 'DallinVader', repo: 'Ebay-Live' };
+
+    function getCameraQualityPreset() {
+        return CAMERA_QUALITY_PRESETS[elements.cameraResolution?.value]
+            || CAMERA_QUALITY_PRESETS[DEFAULT_CAMERA_QUALITY];
+    }
+
+    function getMainCameraQualityPreset() {
+        return CAMERA_QUALITY_PRESETS[elements.mainCameraResolution?.value]
+            || CAMERA_QUALITY_PRESETS[DEFAULT_CAMERA_QUALITY];
+    }
+
+    function getOverlayCameraQualityPreset() {
+        return CAMERA_QUALITY_PRESETS[elements.overlayCameraResolution?.value]
+            || CAMERA_QUALITY_PRESETS.high;
+    }
 
     function resolveAppBasePath() {
         const script = document.currentScript || document.querySelector('script[src*="app.js"]');
@@ -462,6 +503,7 @@
     let streamCanvasCaptureStream = null;
     let streamPublishAudioDest = null;
     let whipFrameTimer = null;
+    let whipKeyframeTimer = null;
     let streamMicTrack = null;
     let micMonitorTrackId = null;
     let streamAudioMixActive = false;
@@ -496,6 +538,9 @@
         isOutputStreaming = live;
         elements.streamStartBtn.disabled = live;
         elements.streamStopBtn.disabled = !live;
+        elements.mainCameraResolution.disabled = live;
+        elements.cameraResolution.disabled = live;
+        elements.overlayCameraResolution.disabled = live || !elements.overlayEnabledToggle.checked;
         setStatus(live);
     }
 
@@ -848,7 +893,7 @@
         streamCompositorState = null;
     }
 
-    async function prepareStreamCompositor(highResolution = false) {
+    async function prepareStreamCompositor() {
         const { mainVideo, overlayVideo, overlayWrap, effectLayer } = getActiveStreamElements();
 
         if (mainVideo.srcObject) {
@@ -863,8 +908,9 @@
             streamCanvas = document.createElement('canvas');
         }
 
-        const outputWidth = highResolution ? STREAM_CANVAS_WIDTH : STREAM_OUTPUT_WIDTH;
-        const outputHeight = highResolution ? STREAM_CANVAS_HEIGHT : STREAM_OUTPUT_HEIGHT;
+        const quality = getCameraQualityPreset();
+        const outputWidth = quality.outputWidth;
+        const outputHeight = quality.outputHeight;
 
         streamCanvas.width = outputWidth;
         streamCanvas.height = outputHeight;
@@ -1261,6 +1307,7 @@
 
     function startWhipFramePump() {
         stopWhipFramePump();
+        const frameDelay = Math.round(1000 / getCameraQualityPreset().frameRate);
 
         if (streamAnimationId) {
             cancelAnimationFrame(streamAnimationId);
@@ -1282,7 +1329,7 @@
                 }
             }
 
-            whipFrameTimer = window.setTimeout(renderFrame, 42);
+            whipFrameTimer = window.setTimeout(renderFrame, frameDelay);
         };
 
         renderFrame();
@@ -1314,7 +1361,9 @@
                 streamPublishVideoTrack.requestFrame();
             } else {
                 streamPublishVideoTrack?.stop();
-                streamCanvasCaptureStream = streamCanvas.captureStream(24);
+                streamCanvasCaptureStream = streamCanvas.captureStream(
+                    getCameraQualityPreset().frameRate,
+                );
                 streamPublishVideoTrack = streamCanvasCaptureStream.getVideoTracks()[0] || null;
 
                 if (streamPublishVideoTrack) {
@@ -1612,6 +1661,59 @@
         });
     }
 
+    function preferWhipH264(peerConnection) {
+        const transceiver = peerConnection.getTransceivers()
+            .find((entry) => entry.sender.track?.kind === 'video');
+        const capabilities = RTCRtpSender.getCapabilities?.('video');
+
+        if (!transceiver?.setCodecPreferences || !capabilities?.codecs?.length) {
+            return;
+        }
+
+        const codecs = [...capabilities.codecs];
+        codecs.sort((left, right) => {
+            const leftH264 = left.mimeType.toLowerCase() === 'video/h264';
+            const rightH264 = right.mimeType.toLowerCase() === 'video/h264';
+            return Number(rightH264) - Number(leftH264);
+        });
+
+        try {
+            transceiver.setCodecPreferences(codecs);
+        } catch (error) {
+            console.warn('Could not prefer H.264 for WHIP:', error);
+        }
+    }
+
+    function stopWhipKeyframePump() {
+        if (whipKeyframeTimer) {
+            window.clearInterval(whipKeyframeTimer);
+            whipKeyframeTimer = null;
+        }
+    }
+
+    function startWhipKeyframePump(videoSender) {
+        stopWhipKeyframePump();
+
+        if (!videoSender) {
+            return;
+        }
+
+        const requestKeyframe = async () => {
+            try {
+                const params = videoSender.getParameters();
+                const encodingOptions = params.encodings.map(() => ({ keyFrame: true }));
+                await videoSender.setParameters(params, { encodingOptions });
+            } catch (error) {
+                console.warn('Periodic WHIP keyframes are unavailable:', error);
+                stopWhipKeyframePump();
+            }
+        };
+
+        whipKeyframeTimer = window.setInterval(() => {
+            void requestKeyframe();
+        }, 2000);
+    }
+
     async function configureWhipSender(peerConnection) {
         const videoSender = peerConnection.getSenders().find((sender) => sender.track?.kind === 'video');
         if (videoSender) {
@@ -1620,11 +1722,11 @@
                 params.encodings = [{}];
             }
 
-            params.encodings[0].maxBitrate = 2500000;
-            params.encodings[0].maxFramerate = 24;
-            // Keep 720x1280 stable. Resolution changes under congestion can make
-            // some WHIP ingest decoders flash green while reinitializing.
-            params.degradationPreference = 'maintain-resolution';
+            params.encodings[0].maxBitrate = getCameraQualityPreset().maxBitrate;
+            params.encodings[0].maxFramerate = getCameraQualityPreset().frameRate;
+            // Let WebRTC reduce resolution temporarily instead of destroying
+            // detail with macroblock smearing when upload bandwidth dips.
+            params.degradationPreference = 'balanced';
 
             try {
                 await videoSender.setParameters(params);
@@ -1648,6 +1750,8 @@
                 console.warn('Could not tune WHIP audio sender:', error);
             }
         }
+
+        return videoSender;
     }
 
     async function startWhipStream(publishStream, endpoint) {
@@ -1660,6 +1764,8 @@
             track.enabled = true;
             peerConnection.addTrack(track, publishStream);
         });
+
+        preferWhipH264(peerConnection);
 
         const offer = await peerConnection.createOffer({
             offerToReceiveAudio: false,
@@ -1688,9 +1794,10 @@
             : null;
 
         await peerConnection.setRemoteDescription({ type: 'answer', sdp: answerSdp });
-        await configureWhipSender(peerConnection);
+        const videoSender = await configureWhipSender(peerConnection);
         whipPeerConnection = peerConnection;
         startWhipFramePump();
+        startWhipKeyframePump(videoSender);
 
         peerConnection.addEventListener('connectionstatechange', () => {
             if (!isOutputStreaming) {
@@ -1709,6 +1816,8 @@
     }
 
     async function stopWhipStream() {
+        stopWhipKeyframePump();
+
         if (whipPeerConnection) {
             whipPeerConnection.close();
             whipPeerConnection = null;
@@ -1764,7 +1873,7 @@
         updateStreamOutputStatus('Connecting to FFmpeg relay…');
         clearStreamCanvasCapture();
         await setupStreamAudioMix();
-        await prepareStreamCompositor(false);
+        await prepareStreamCompositor();
         await warmUpStreamCompositor();
 
         const hasVideo = Boolean(elements.cameraPreview.srcObject || mediaStream);
@@ -1829,7 +1938,7 @@
         const endpoint = buildWhipEndpoint(streamUrl, streamKey);
         updateStreamOutputStatus('Connecting via WHIP…');
         clearStreamCanvasCapture();
-        await prepareStreamCompositor(false);
+        await prepareStreamCompositor();
         await warmUpStreamCompositor(12);
 
         const publishStream = await buildPublishStream();
@@ -2086,6 +2195,7 @@
 
     function setOverlayControlsEnabled(enabled) {
         elements.overlayCameraSelect.disabled = !enabled;
+        elements.overlayCameraResolution.disabled = !enabled || isOutputStreaming;
         elements.overlayLayout.disabled = !enabled;
         elements.overlayAspect.disabled = !enabled || isSplitOverlayLayout();
         elements.overlaySize.disabled = !enabled || isSplitOverlayLayout();
@@ -2122,9 +2232,12 @@
     function saveStreamSettings() {
         const settings = {
             cameraId: elements.cameraSelect.value,
+            mainCameraQuality: elements.mainCameraResolution.value,
+            cameraQuality: elements.cameraResolution.value,
             micId: elements.micSelect.value,
             overlayEnabled: elements.overlayEnabledToggle.checked,
             overlayCameraId: elements.overlayCameraSelect.value,
+            overlayCameraQuality: elements.overlayCameraResolution.value,
             overlayLayout: elements.overlayLayout.value,
             overlaySize: elements.overlaySize.value,
             overlayAspect: elements.overlayAspect.value,
@@ -2150,6 +2263,15 @@
 
             const settings = JSON.parse(raw);
 
+            if (settings.mainCameraQuality && CAMERA_QUALITY_PRESETS[settings.mainCameraQuality]) {
+                elements.mainCameraResolution.value = settings.mainCameraQuality;
+            }
+            if (settings.cameraQuality && CAMERA_QUALITY_PRESETS[settings.cameraQuality]) {
+                elements.cameraResolution.value = settings.cameraQuality;
+            }
+            if (settings.overlayCameraQuality && CAMERA_QUALITY_PRESETS[settings.overlayCameraQuality]) {
+                elements.overlayCameraResolution.value = settings.overlayCameraQuality;
+            }
             if (typeof settings.overlayEnabled === 'boolean') {
                 elements.overlayEnabledToggle.checked = settings.overlayEnabled;
             }
@@ -2232,12 +2354,15 @@
             return;
         }
 
+        const quality = getOverlayCameraQualityPreset();
+
         try {
             overlayMediaStream = await navigator.mediaDevices.getUserMedia({
                 video: {
                     deviceId: { exact: cameraId },
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 },
+                    width: { ideal: quality.cameraWidth },
+                    height: { ideal: quality.cameraHeight },
+                    frameRate: { ideal: quality.frameRate, max: quality.frameRate },
                 },
                 audio: false,
             });
@@ -2456,6 +2581,7 @@
 
     async function startStream(cameraId, micId) {
         const resolvedMicId = micId || getMicDeviceId();
+        const quality = getMainCameraQualityPreset();
         stopMainStream();
         releaseStreamMicTrack();
 
@@ -2467,8 +2593,9 @@
                 const cameraStream = await navigator.mediaDevices.getUserMedia({
                     video: {
                         deviceId: { exact: cameraId },
-                        width: { ideal: 1920 },
-                        height: { ideal: 1080 },
+                        width: { ideal: quality.cameraWidth },
+                        height: { ideal: quality.cameraHeight },
+                        frameRate: { ideal: quality.frameRate, max: quality.frameRate },
                     },
                     audio: false,
                 });
@@ -2610,6 +2737,31 @@
         await startStream(elements.cameraSelect.value || null, getMicDeviceId());
         await updateOverlayCamera();
         syncFullscreenState();
+    }
+
+    async function handleMainCameraResolutionChange() {
+        if (isOutputStreaming) {
+            return;
+        }
+
+        saveStreamSettings();
+        await startStream(elements.cameraSelect.value || null, getMicDeviceId());
+        syncFullscreenState();
+    }
+
+    function handleStreamResolutionChange() {
+        if (!isOutputStreaming) {
+            saveStreamSettings();
+        }
+    }
+
+    async function handleOverlayCameraResolutionChange() {
+        if (isOutputStreaming) {
+            return;
+        }
+
+        saveStreamSettings();
+        await updateOverlayCamera();
     }
 
     async function handleMicChange() {
@@ -3853,12 +4005,15 @@
     }
 
     elements.cameraSelect.addEventListener('change', handleCameraChange);
+    elements.mainCameraResolution.addEventListener('change', handleMainCameraResolutionChange);
+    elements.cameraResolution.addEventListener('change', handleStreamResolutionChange);
     elements.micSelect.addEventListener('change', handleMicChange);
     elements.micVolume.addEventListener('input', updateMicVolume);
     elements.mirrorToggle.addEventListener('change', applyMirror);
     elements.showOverlayToggle.addEventListener('change', applyOverlayVisibility);
     elements.overlayEnabledToggle.addEventListener('change', updateOverlayCamera);
     elements.overlayCameraSelect.addEventListener('change', updateOverlayCamera);
+    elements.overlayCameraResolution.addEventListener('change', handleOverlayCameraResolutionChange);
     elements.overlayLayout.addEventListener('change', updateOverlayCamera);
     elements.overlayAspect.addEventListener('change', updateOverlayCamera);
     elements.overlaySize.addEventListener('input', updateOverlayCamera);

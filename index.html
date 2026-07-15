@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>eBay Live — Stream Console</title>
-    <link rel="stylesheet" href="css/styles.css?v=20260714">
+    <link rel="stylesheet" href="css/styles.css?v=20260715b">
 </head>
 <body>
     <div id="app">
@@ -53,6 +53,25 @@
                         </select>
                     </div>
 
+                    <div class="setting-group">
+                        <label for="main-camera-resolution">Main camera quality</label>
+                        <select id="main-camera-resolution">
+                            <option value="low">Low — 640×360 (fastest)</option>
+                            <option value="medium" selected>Medium — 1280×720</option>
+                            <option value="high">High — 1920×1080</option>
+                        </select>
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="camera-resolution">Stream output quality</label>
+                        <select id="camera-resolution">
+                            <option value="low">Low — 360×640 output (fastest)</option>
+                            <option value="medium" selected>Medium — 540×960 output</option>
+                            <option value="high">High — 720×1280 output</option>
+                        </select>
+                        <p class="field-hint">Controls the final combined stream sent to eBay.</p>
+                    </div>
+
                     <div class="setting-subsection">
                         <h3>Overlay camera</h3>
 
@@ -68,6 +87,15 @@
                             <label for="overlay-camera-select">Overlay camera</label>
                             <select id="overlay-camera-select" disabled>
                                 <option value="">None</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-group">
+                            <label for="overlay-camera-resolution">Overlay camera quality</label>
+                            <select id="overlay-camera-resolution" disabled>
+                                <option value="low">Low — 640×360 (fastest)</option>
+                                <option value="medium">Medium — 1280×720</option>
+                                <option value="high" selected>High — 1920×1080 (product detail)</option>
                             </select>
                         </div>
 
@@ -374,6 +402,6 @@
 
     <audio id="music-player"></audio>
 
-    <script src="js/app.js?v=20260714"></script>
+    <script src="js/app.js?v=20260715b"></script>
 </body>
 </html>
