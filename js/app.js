@@ -165,7 +165,7 @@
             cameraHeight: 360,
             outputWidth: 360,
             outputHeight: 640,
-            maxBitrate: 1500000,
+            maxBitrate: 2200000,
             frameRate: 24,
         },
         medium: {
@@ -173,7 +173,7 @@
             cameraHeight: 720,
             outputWidth: 540,
             outputHeight: 960,
-            maxBitrate: 3000000,
+            maxBitrate: 4000000,
             frameRate: 30,
         },
         high: {
@@ -499,11 +499,15 @@
     let streamSocket = null;
     let whipPeerConnection = null;
     let whipSessionUrl = null;
+    let mainStreamRequestId = 0;
+    let overlayStreamRequestId = 0;
     let streamPublishVideoTrack = null;
     let streamCanvasCaptureStream = null;
     let streamPublishAudioDest = null;
     let whipFrameTimer = null;
+    let whipFrameUsesAnimationFrame = false;
     let whipKeyframeTimer = null;
+    let whipStatsTimer = null;
     let streamMicTrack = null;
     let micMonitorTrackId = null;
     let streamAudioMixActive = false;
@@ -519,6 +523,8 @@
     let streamRelayAvailable = false;
     let ffmpegAvailable = false;
     let isOutputStreaming = false;
+    let isOutputStarting = false;
+    let whipAbortController = null;
 
     function setStatus(live) {
         elements.streamStatus.textContent = live ? 'Live' : 'Ready';
@@ -538,10 +544,23 @@
         isOutputStreaming = live;
         elements.streamStartBtn.disabled = live;
         elements.streamStopBtn.disabled = !live;
+        elements.cameraSelect.disabled = live;
+        elements.micSelect.disabled = live;
+        elements.overlayEnabledToggle.disabled = live;
         elements.mainCameraResolution.disabled = live;
         elements.cameraResolution.disabled = live;
-        elements.overlayCameraResolution.disabled = live || !elements.overlayEnabledToggle.checked;
+        setOverlayControlsEnabled(elements.overlayEnabledToggle.checked);
         setStatus(live);
+    }
+
+    function setOutputStartingState(starting) {
+        isOutputStarting = starting;
+        elements.streamStartBtn.disabled = starting || isOutputStreaming;
+        const lockSources = starting || isOutputStreaming;
+        elements.cameraSelect.disabled = lockSources;
+        elements.micSelect.disabled = lockSources;
+        elements.overlayEnabledToggle.disabled = lockSources;
+        setOverlayControlsEnabled(elements.overlayEnabledToggle.checked);
     }
 
     function formatStreamError(error) {
@@ -717,10 +736,22 @@
         }
 
         ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, y, width, height);
+        ctx.clip();
+
         if (mirrored) {
             ctx.translate(x + width, y);
             ctx.scale(-1, 1);
-            ctx.drawImage(video, x, drawY, drawWidth, drawHeight);
+            const localDrawX = drawX - x;
+            const localDrawY = drawY - y;
+            ctx.drawImage(
+                video,
+                width - localDrawX - drawWidth,
+                localDrawY,
+                drawWidth,
+                drawHeight,
+            );
         } else {
             ctx.drawImage(video, drawX, drawY, drawWidth, drawHeight);
         }
@@ -992,6 +1023,7 @@
     }
 
     function clearStreamCanvasCapture() {
+        streamCanvasCaptureStream?.getTracks().forEach((track) => track.stop());
         streamPublishVideoTrack = null;
         streamCanvasCaptureStream = null;
         stopWhipFramePump();
@@ -1252,6 +1284,7 @@
             streamMixGainNode = null;
         }
 
+        streamPublishAudioDest?.stream.getTracks().forEach((track) => track.stop());
         streamPublishAudioDest = null;
         updateMusicStreamGains();
     }
@@ -1308,37 +1341,73 @@
     function startWhipFramePump() {
         stopWhipFramePump();
         const frameDelay = Math.round(1000 / getCameraQualityPreset().frameRate);
+        let lastFrameTime = 0;
 
         if (streamAnimationId) {
             cancelAnimationFrame(streamAnimationId);
             streamAnimationId = null;
         }
 
-        const renderFrame = () => {
+        const scheduleFrame = (callback) => {
+            if (document.hidden) {
+                whipFrameUsesAnimationFrame = false;
+                whipFrameTimer = window.setTimeout(
+                    () => callback(performance.now()),
+                    frameDelay,
+                );
+            } else {
+                whipFrameUsesAnimationFrame = true;
+                whipFrameTimer = requestAnimationFrame(callback);
+            }
+        };
+
+        const renderFrame = (timestamp) => {
             if (!streamCompositorState) {
                 return;
             }
 
-            drawCompositorFrame();
+            if (timestamp - lastFrameTime >= frameDelay) {
+                lastFrameTime = timestamp;
+                drawCompositorFrame();
 
-            if (streamPublishVideoTrack && typeof streamPublishVideoTrack.requestFrame === 'function') {
-                try {
-                    streamPublishVideoTrack.requestFrame();
-                } catch {
-                    // Ignore requestFrame errors.
+                if (streamPublishVideoTrack && typeof streamPublishVideoTrack.requestFrame === 'function') {
+                    try {
+                        streamPublishVideoTrack.requestFrame();
+                    } catch {
+                        // Ignore requestFrame errors.
+                    }
                 }
             }
 
-            whipFrameTimer = window.setTimeout(renderFrame, frameDelay);
+            scheduleFrame(renderFrame);
         };
 
-        renderFrame();
+        drawCompositorFrame();
+        if (streamPublishVideoTrack && typeof streamPublishVideoTrack.requestFrame === 'function') {
+            try {
+                streamPublishVideoTrack.requestFrame();
+            } catch {
+                // Ignore requestFrame errors.
+            }
+        }
+        scheduleFrame(renderFrame);
     }
 
     function stopWhipFramePump() {
         if (whipFrameTimer) {
-            window.clearTimeout(whipFrameTimer);
+            if (whipFrameUsesAnimationFrame) {
+                cancelAnimationFrame(whipFrameTimer);
+            } else {
+                window.clearTimeout(whipFrameTimer);
+            }
             whipFrameTimer = null;
+        }
+        whipFrameUsesAnimationFrame = false;
+    }
+
+    function handleWhipVisibilityChange() {
+        if (whipPeerConnection && streamPublishVideoTrack) {
+            startWhipFramePump();
         }
     }
 
@@ -1602,25 +1671,36 @@
     }
 
     function buildWhipEndpoint(streamUrl, streamKey) {
-        let endpoint = streamUrl.trim().replace(/\/+$/, '');
+        const endpoint = new URL(streamUrl.trim());
+        if (
+            endpoint.protocol !== 'https:'
+            || endpoint.username
+            || endpoint.password
+            || endpoint.hash
+        ) {
+            throw new Error('WHIP requires a clean HTTPS ingest URL.');
+        }
+
         const trimmedKey = streamKey.trim().replace(/^\/+/, '');
 
         if (trimmedKey) {
-            const keyPath = trimmedKey.split('?')[0];
-            const keyQuery = trimmedKey.includes('?') ? trimmedKey.slice(trimmedKey.indexOf('?')) : '';
+            const [keyPath, keyQuery = ''] = trimmedKey.split(/\?(.*)/s);
+            const normalizedPath = endpoint.pathname.replace(/\/+$/, '');
+            const pathSegments = normalizedPath.split('/');
 
-            if (!endpoint.includes(keyPath)) {
-                endpoint = `${endpoint}/${trimmedKey}`;
-            } else if (keyQuery && !endpoint.includes('direction=whip')) {
-                endpoint += keyQuery.startsWith('?') ? keyQuery : `?${keyQuery}`;
+            if (pathSegments.at(-1) !== keyPath) {
+                endpoint.pathname = `${normalizedPath}/${keyPath}`;
+            }
+
+            const keyParams = new URLSearchParams(keyQuery);
+            for (const [name, value] of keyParams) {
+                endpoint.searchParams.set(name, value);
             }
         }
 
-        if (!endpoint.includes('direction=whip')) {
-            endpoint += endpoint.includes('?') ? '&direction=whip' : '?direction=whip';
-        }
+        endpoint.searchParams.set('direction', 'whip');
 
-        return endpoint;
+        return endpoint.href;
     }
 
     function buildRtmpFallbackTarget(streamUrl, streamKey) {
@@ -1638,50 +1718,32 @@
         };
     }
 
-    function waitForIceGatheringComplete(peerConnection, timeoutMs = 5000) {
+    function waitForIceGatheringComplete(peerConnection, timeoutMs = 12000) {
         if (peerConnection.iceGatheringState === 'complete') {
             return Promise.resolve();
         }
 
-        return new Promise((resolve) => {
-            const finish = () => {
+        return new Promise((resolve, reject) => {
+            const cleanup = () => {
                 peerConnection.removeEventListener('icegatheringstatechange', onStateChange);
                 window.clearTimeout(timeoutId);
-                resolve();
             };
 
             const onStateChange = () => {
                 if (peerConnection.iceGatheringState === 'complete') {
-                    finish();
+                    cleanup();
+                    resolve();
                 }
             };
 
-            const timeoutId = window.setTimeout(finish, timeoutMs);
+            const timeoutId = window.setTimeout(() => {
+                cleanup();
+                reject(new Error(
+                    'WHIP ICE gathering timed out. Check firewall, VPN, and STUN connectivity.',
+                ));
+            }, timeoutMs);
             peerConnection.addEventListener('icegatheringstatechange', onStateChange);
         });
-    }
-
-    function preferWhipH264(peerConnection) {
-        const transceiver = peerConnection.getTransceivers()
-            .find((entry) => entry.sender.track?.kind === 'video');
-        const capabilities = RTCRtpSender.getCapabilities?.('video');
-
-        if (!transceiver?.setCodecPreferences || !capabilities?.codecs?.length) {
-            return;
-        }
-
-        const codecs = [...capabilities.codecs];
-        codecs.sort((left, right) => {
-            const leftH264 = left.mimeType.toLowerCase() === 'video/h264';
-            const rightH264 = right.mimeType.toLowerCase() === 'video/h264';
-            return Number(rightH264) - Number(leftH264);
-        });
-
-        try {
-            transceiver.setCodecPreferences(codecs);
-        } catch (error) {
-            console.warn('Could not prefer H.264 for WHIP:', error);
-        }
     }
 
     function stopWhipKeyframePump() {
@@ -1714,40 +1776,103 @@
         }, 2000);
     }
 
+    function stopWhipStatsMonitor() {
+        if (whipStatsTimer) {
+            window.clearInterval(whipStatsTimer);
+            whipStatsTimer = null;
+        }
+    }
+
+    function startWhipStatsMonitor(peerConnection) {
+        stopWhipStatsMonitor();
+        let previousBytes = 0;
+        let previousFrames = 0;
+        let previousTimestamp = 0;
+
+        const updateStats = async () => {
+            if (peerConnection.connectionState !== 'connected') {
+                return;
+            }
+
+            try {
+                const report = await peerConnection.getStats();
+                const outbound = [...report.values()].find((entry) => (
+                    entry.type === 'outbound-rtp'
+                    && (entry.kind === 'video' || entry.mediaType === 'video')
+                    && !entry.isRemote
+                ));
+
+                if (!outbound) {
+                    return;
+                }
+
+                const elapsedSeconds = previousTimestamp
+                    ? (outbound.timestamp - previousTimestamp) / 1000
+                    : 0;
+                const bitrateMbps = elapsedSeconds > 0
+                    ? ((outbound.bytesSent - previousBytes) * 8) / elapsedSeconds / 1000000
+                    : 0;
+                const measuredFps = elapsedSeconds > 0
+                    ? (outbound.framesEncoded - previousFrames) / elapsedSeconds
+                    : outbound.framesPerSecond || 0;
+                const fps = outbound.framesPerSecond || measuredFps;
+                const limitation = outbound.qualityLimitationReason;
+                const limitedText = limitation && limitation !== 'none'
+                    ? ` • limited by ${limitation}`
+                    : '';
+
+                if (previousTimestamp) {
+                    updateStreamOutputStatus(
+                        `WHIP ${bitrateMbps.toFixed(1)} Mbps • ${Math.round(fps)} FPS${limitedText}`,
+                        limitation && limitation !== 'none' ? 'is-error' : 'is-live',
+                    );
+                }
+
+                previousBytes = outbound.bytesSent;
+                previousFrames = outbound.framesEncoded;
+                previousTimestamp = outbound.timestamp;
+            } catch (error) {
+                console.warn('Could not read WHIP stream stats:', error);
+                stopWhipStatsMonitor();
+            }
+        };
+
+        void updateStats();
+        whipStatsTimer = window.setInterval(() => {
+            void updateStats();
+        }, 2000);
+    }
+
     async function configureWhipSender(peerConnection) {
         const videoSender = peerConnection.getSenders().find((sender) => sender.track?.kind === 'video');
         if (videoSender) {
             const params = videoSender.getParameters();
-            if (!params.encodings.length) {
-                params.encodings = [{}];
-            }
+            if (params.encodings.length) {
+                params.encodings[0].maxBitrate = getCameraQualityPreset().maxBitrate;
+                params.encodings[0].maxFramerate = getCameraQualityPreset().frameRate;
+                // Preserve motion cadence. Dropped frames make camera movement look
+                // delayed and jumpy; temporary scaling is less disruptive.
+                params.degradationPreference = 'maintain-framerate';
 
-            params.encodings[0].maxBitrate = getCameraQualityPreset().maxBitrate;
-            params.encodings[0].maxFramerate = getCameraQualityPreset().frameRate;
-            // Let WebRTC reduce resolution temporarily instead of destroying
-            // detail with macroblock smearing when upload bandwidth dips.
-            params.degradationPreference = 'balanced';
-
-            try {
-                await videoSender.setParameters(params);
-            } catch (error) {
-                console.warn('Could not tune WHIP video sender:', error);
+                try {
+                    await videoSender.setParameters(params);
+                } catch (error) {
+                    console.warn('Could not tune WHIP video sender:', error);
+                }
             }
         }
 
         const audioSender = peerConnection.getSenders().find((sender) => sender.track?.kind === 'audio');
         if (audioSender) {
             const params = audioSender.getParameters();
-            if (!params.encodings.length) {
-                params.encodings = [{}];
-            }
+            if (params.encodings.length) {
+                params.encodings[0].maxBitrate = 128000;
 
-            params.encodings[0].maxBitrate = 128000;
-
-            try {
-                await audioSender.setParameters(params);
-            } catch (error) {
-                console.warn('Could not tune WHIP audio sender:', error);
+                try {
+                    await audioSender.setParameters(params);
+                } catch (error) {
+                    console.warn('Could not tune WHIP audio sender:', error);
+                }
             }
         }
 
@@ -1759,64 +1884,122 @@
             iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
             bundlePolicy: 'max-bundle',
         });
+        const abortController = new AbortController();
+        whipAbortController = abortController;
+        let createdSessionUrl = null;
+        let postTimeoutId = null;
 
-        publishStream.getTracks().forEach((track) => {
-            track.enabled = true;
-            peerConnection.addTrack(track, publishStream);
-        });
+        try {
+            publishStream.getTracks().forEach((track) => {
+                track.enabled = true;
+                peerConnection.addTransceiver(track, {
+                    direction: 'sendonly',
+                    streams: [publishStream],
+                });
+            });
 
-        preferWhipH264(peerConnection);
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            await waitForIceGatheringComplete(peerConnection);
 
-        const offer = await peerConnection.createOffer({
-            offerToReceiveAudio: false,
-            offerToReceiveVideo: false,
-        });
-        await peerConnection.setLocalDescription(offer);
-        await waitForIceGatheringComplete(peerConnection);
+            const localSdp = peerConnection.localDescription?.sdp;
+            if (!localSdp) {
+                throw new Error('WHIP could not create a complete local SDP offer.');
+            }
 
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/sdp',
-            },
-            body: peerConnection.localDescription?.sdp || offer.sdp,
-        });
+            postTimeoutId = window.setTimeout(() => abortController.abort(), 15000);
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/sdp',
+                    'Content-Type': 'application/sdp',
+                },
+                body: localSdp,
+                signal: abortController.signal,
+            });
+            window.clearTimeout(postTimeoutId);
+            postTimeoutId = null;
 
-        if (!response.ok) {
-            const errorText = await response.text().catch(() => '');
-            throw new Error(`WHIP connection failed (${response.status}): ${errorText || response.statusText}`);
+            if (!response.ok) {
+                const errorText = await response.text().catch(() => '');
+                throw new Error(`WHIP connection failed (${response.status}): ${errorText || response.statusText}`);
+            }
+
+            if (response.status !== 201) {
+                console.warn(`WHIP endpoint returned ${response.status}; RFC 9725 specifies 201 Created.`);
+            }
+
+            const answerSdp = await response.text();
+            if (!answerSdp.trim().startsWith('v=0')) {
+                throw new Error('WHIP endpoint returned an invalid SDP answer.');
+            }
+
+            const responseType = response.headers.get('Content-Type') || '';
+            if (responseType && !responseType.toLowerCase().includes('application/sdp')) {
+                console.warn(`WHIP answer used unexpected Content-Type: ${responseType}`);
+            }
+
+            const locationHeader = response.headers.get('Location');
+            createdSessionUrl = locationHeader
+                ? new URL(locationHeader, response.url || endpoint).href
+                : null;
+            if (!createdSessionUrl) {
+                console.warn('WHIP endpoint did not return a Location header; remote cleanup is unavailable.');
+            }
+
+            await peerConnection.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+            const videoSender = await configureWhipSender(peerConnection);
+            whipSessionUrl = createdSessionUrl;
+            whipPeerConnection = peerConnection;
+            startWhipFramePump();
+            startWhipKeyframePump(videoSender);
+            startWhipStatsMonitor(peerConnection);
+
+            peerConnection.addEventListener('connectionstatechange', () => {
+                if (!isOutputStreaming) {
+                    return;
+                }
+
+                if (peerConnection.connectionState === 'failed') {
+                    void stopOutputStream(false);
+                    updateStreamOutputStatus('WHIP connection failed.', 'is-error');
+                } else if (peerConnection.connectionState === 'disconnected') {
+                    updateStreamOutputStatus('WHIP connection interrupted — waiting for recovery…', 'is-error');
+                } else if (peerConnection.connectionState === 'connected') {
+                    updateStreamOutputStatus('Streaming to eBay Live (WHIP — low latency)', 'is-live');
+                }
+            });
+        } catch (error) {
+            peerConnection.close();
+
+            if (createdSessionUrl) {
+                try {
+                    await fetch(createdSessionUrl, { method: 'DELETE' });
+                } catch {
+                    // Best-effort cleanup for a partially created WHIP session.
+                }
+            }
+
+            if (error?.name === 'AbortError') {
+                throw new Error('WHIP endpoint did not respond within 15 seconds.');
+            }
+
+            throw error;
+        } finally {
+            if (postTimeoutId) {
+                window.clearTimeout(postTimeoutId);
+            }
+            if (whipAbortController === abortController) {
+                whipAbortController = null;
+            }
         }
-
-        const answerSdp = await response.text();
-        const locationHeader = response.headers.get('Location');
-        whipSessionUrl = locationHeader
-            ? new URL(locationHeader, endpoint).href
-            : null;
-
-        await peerConnection.setRemoteDescription({ type: 'answer', sdp: answerSdp });
-        const videoSender = await configureWhipSender(peerConnection);
-        whipPeerConnection = peerConnection;
-        startWhipFramePump();
-        startWhipKeyframePump(videoSender);
-
-        peerConnection.addEventListener('connectionstatechange', () => {
-            if (!isOutputStreaming) {
-                return;
-            }
-
-            if (peerConnection.connectionState === 'failed') {
-                stopOutputStream(false);
-                updateStreamOutputStatus('WHIP connection failed.', 'is-error');
-            } else if (peerConnection.connectionState === 'disconnected') {
-                updateStreamOutputStatus('WHIP connection interrupted — retrying…', 'is-live');
-            } else if (peerConnection.connectionState === 'connected') {
-                updateStreamOutputStatus('Streaming to eBay Live (WHIP — low latency)', 'is-live');
-            }
-        });
     }
 
     async function stopWhipStream() {
         stopWhipKeyframePump();
+        stopWhipStatsMonitor();
+        whipAbortController?.abort();
+        whipAbortController = null;
 
         if (whipPeerConnection) {
             whipPeerConnection.close();
@@ -1942,7 +2125,7 @@
         await warmUpStreamCompositor(12);
 
         const publishStream = await buildPublishStream();
-        const hasMic = publishStream.getAudioTracks().some((track) => track.readyState === 'live');
+        const hasMic = hasStreamMicrophone();
         await startWhipStream(publishStream, endpoint);
 
         const hasVideo = Boolean(elements.cameraPreview.srcObject || mediaStream?.getVideoTracks().length);
@@ -1989,6 +2172,10 @@
     }
 
     async function startOutputStream() {
+        if (isOutputStarting || isOutputStreaming) {
+            return;
+        }
+
         const streamUrl = elements.streamUrl.value.trim();
         const streamKey = elements.streamKey.value.trim();
         const protocol = resolveStreamProtocol(streamUrl, streamKey);
@@ -2009,14 +2196,15 @@
         }
 
         saveStreamOutputSettings();
+        setOutputStartingState(true);
 
         try {
             updateStreamOutputStatus('Opening microphone…');
             const micTrack = await acquireStreamMicrophoneTrack(true);
             if (!micTrack) {
                 updateStreamOutputStatus('No microphone — streaming video/effects only.', 'is-error');
-            } else if (typeof micTrack.clone === 'function') {
-                await setupMicAudio(micTrack.clone());
+            } else {
+                await setupMicAudio(micTrack);
             }
 
             await waitForAnimationFrames(2);
@@ -2044,8 +2232,10 @@
             }
         } catch (error) {
             console.error('Stream start error:', error);
-            stopOutputStream(false);
+            await stopOutputStream(false);
             updateStreamOutputStatus(formatStreamError(error), 'is-error');
+        } finally {
+            setOutputStartingState(false);
         }
     }
 
@@ -2194,8 +2384,9 @@
     }
 
     function setOverlayControlsEnabled(enabled) {
-        elements.overlayCameraSelect.disabled = !enabled;
-        elements.overlayCameraResolution.disabled = !enabled || isOutputStreaming;
+        const lockSources = isOutputStarting || isOutputStreaming;
+        elements.overlayCameraSelect.disabled = !enabled || lockSources;
+        elements.overlayCameraResolution.disabled = !enabled || lockSources;
         elements.overlayLayout.disabled = !enabled;
         elements.overlayAspect.disabled = !enabled || isSplitOverlayLayout();
         elements.overlaySize.disabled = !enabled || isSplitOverlayLayout();
@@ -2335,6 +2526,8 @@
     }
 
     function stopOverlayStream() {
+        overlayStreamRequestId += 1;
+
         if (overlayMediaStream) {
             overlayMediaStream.getTracks().forEach((track) => track.stop());
             overlayMediaStream = null;
@@ -2349,6 +2542,7 @@
 
     async function startOverlayStream(cameraId) {
         stopOverlayStream();
+        const requestId = overlayStreamRequestId;
 
         if (!elements.overlayEnabledToggle.checked || !cameraId) {
             return;
@@ -2357,7 +2551,7 @@
         const quality = getOverlayCameraQualityPreset();
 
         try {
-            overlayMediaStream = await navigator.mediaDevices.getUserMedia({
+            const nextStream = await navigator.mediaDevices.getUserMedia({
                 video: {
                     deviceId: { exact: cameraId },
                     width: { ideal: quality.cameraWidth },
@@ -2367,13 +2561,28 @@
                 audio: false,
             });
 
+            if (
+                requestId !== overlayStreamRequestId
+                || !elements.overlayEnabledToggle.checked
+                || elements.overlayCameraSelect.value !== cameraId
+            ) {
+                nextStream.getTracks().forEach((track) => track.stop());
+                return;
+            }
+
+            overlayMediaStream = nextStream;
+            nextStream.getVideoTracks().forEach((track) => {
+                track.contentHint = 'motion';
+            });
             elements.previewOverlayWrap.classList.remove('hidden');
             elements.fullscreenOverlayWrap.classList.remove('hidden');
             syncStreamVideoBindings();
             applyOverlayCameraLayout();
             applyOverlayCameraMirror();
         } catch (err) {
-            console.error('Overlay camera error:', err);
+            if (requestId === overlayStreamRequestId) {
+                console.error('Overlay camera error:', err);
+            }
         }
     }
 
@@ -2389,6 +2598,13 @@
         }
 
         await startOverlayStream(elements.overlayCameraSelect.value);
+    }
+
+    function updateOverlayLayoutSettings() {
+        setOverlayControlsEnabled(elements.overlayEnabledToggle.checked);
+        applyOverlayCameraLayout();
+        applyOverlayCameraMirror();
+        saveStreamSettings();
     }
 
     function applyOverlayVisibility() {
@@ -2512,6 +2728,7 @@
     }
 
     function stopMainStream() {
+        mainStreamRequestId += 1;
         teardownMicAudio();
 
         if (mediaStream) {
@@ -2583,6 +2800,7 @@
         const resolvedMicId = micId || getMicDeviceId();
         const quality = getMainCameraQualityPreset();
         stopMainStream();
+        const requestId = mainStreamRequestId;
         releaseStreamMicTrack();
 
         let videoTrack = null;
@@ -2600,8 +2818,20 @@
                     audio: false,
                 });
                 videoTrack = cameraStream.getVideoTracks()[0] || null;
+                if (videoTrack) {
+                    videoTrack.contentHint = 'motion';
+                }
+
+                if (requestId !== mainStreamRequestId) {
+                    cameraStream.getTracks().forEach((track) => track.stop());
+                    return;
+                }
+
                 elements.cameraError.classList.add('hidden');
             } catch (videoErr) {
+                if (requestId !== mainStreamRequestId) {
+                    return;
+                }
                 console.error('Camera open error:', videoErr);
                 elements.cameraError.classList.remove('hidden');
             }
@@ -2614,6 +2844,12 @@
             }
         } else {
             elements.micStatus.textContent = 'No mic';
+        }
+
+        if (requestId !== mainStreamRequestId) {
+            videoTrack?.stop();
+            audioTrack?.stop();
+            return;
         }
 
         const tracks = [];
@@ -2689,16 +2925,18 @@
         populateOverlayCameraSelect();
     }
 
-    async function loadDevices() {
-        try {
-            const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-            tempStream.getTracks().forEach((track) => track.stop());
-        } catch {
+    async function loadDevices(initializeStreams = false) {
+        if (initializeStreams) {
             try {
-                const micOnly = await navigator.mediaDevices.getUserMedia({ audio: true });
-                micOnly.getTracks().forEach((track) => track.stop());
+                const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                tempStream.getTracks().forEach((track) => track.stop());
             } catch {
-                // Permission may be denied; still try to enumerate.
+                try {
+                    const micOnly = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    micOnly.getTracks().forEach((track) => track.stop());
+                } catch {
+                    // Permission may be denied; still try to enumerate.
+                }
             }
         }
 
@@ -2708,9 +2946,12 @@
 
         populateDeviceSelects();
 
+        if (!initializeStreams) {
+            return;
+        }
+
         const micId = getMicDeviceId();
         await startStream(elements.cameraSelect.value || null, micId);
-
         if (elements.cameraSelect.value) {
             await updateOverlayCamera();
         }
@@ -2797,7 +3038,7 @@
         elements.console.classList.add('hidden');
         elements.fullscreenView.classList.remove('hidden');
         elements.fullscreenView.classList.add('active');
-        setStatus(true);
+        setStatus(isOutputStreaming);
         syncFullscreenState();
         syncStreamVideoBindings();
 
@@ -3545,7 +3786,7 @@
             const source = audioContext.createBufferSource();
             const gain = audioContext.createGain();
             source.buffer = buffer;
-            gain.gain.value = volume;
+            gain.gain.value = 1;
             source.connect(gain);
             gain.connect(streamSfxGain);
 
@@ -3579,11 +3820,12 @@
 
         return new Promise((resolve) => {
             const player = new Audio(url);
-            player.volume = elements.effectSfxVolume.value / 100;
+            player.volume = 1;
 
-            const cleanup = (source) => {
+            const cleanup = (source, monitorGain) => {
                 try {
                     source?.disconnect();
+                    monitorGain?.disconnect();
                 } catch {
                     // Already disconnected.
                 }
@@ -3593,10 +3835,13 @@
                 try {
                     await ensureStreamAudioContext();
                     const source = audioContext.createMediaElementSource(player);
+                    const monitorGain = audioContext.createGain();
+                    monitorGain.gain.value = elements.effectSfxVolume.value / 100;
                     source.connect(streamSfxGain);
-                    source.connect(audioContext.destination);
+                    source.connect(monitorGain);
+                    monitorGain.connect(audioContext.destination);
                     player.addEventListener('ended', () => {
-                        cleanup(source);
+                        cleanup(source, monitorGain);
                         resolve(true);
                     }, { once: true });
                 } catch (error) {
@@ -4014,10 +4259,10 @@
     elements.overlayEnabledToggle.addEventListener('change', updateOverlayCamera);
     elements.overlayCameraSelect.addEventListener('change', updateOverlayCamera);
     elements.overlayCameraResolution.addEventListener('change', handleOverlayCameraResolutionChange);
-    elements.overlayLayout.addEventListener('change', updateOverlayCamera);
-    elements.overlayAspect.addEventListener('change', updateOverlayCamera);
-    elements.overlaySize.addEventListener('input', updateOverlayCamera);
-    elements.overlayMirrorToggle.addEventListener('change', updateOverlayCamera);
+    elements.overlayLayout.addEventListener('change', updateOverlayLayoutSettings);
+    elements.overlayAspect.addEventListener('change', updateOverlayLayoutSettings);
+    elements.overlaySize.addEventListener('input', updateOverlayLayoutSettings);
+    elements.overlayMirrorToggle.addEventListener('change', updateOverlayLayoutSettings);
     elements.streamUrl.addEventListener('change', saveStreamOutputSettings);
     elements.streamKey.addEventListener('change', saveStreamOutputSettings);
     elements.streamProtocol.addEventListener('change', () => {
@@ -4040,6 +4285,7 @@
     }, { once: false });
 
     document.addEventListener('keydown', handleGlobalKeydown);
+    document.addEventListener('visibilitychange', handleWhipVisibilityChange);
 
     document.addEventListener('fullscreenchange', () => {
         if (!document.fullscreenElement && isFullscreen) {
@@ -4096,7 +4342,9 @@
     });
     elements.effectSfxToggle.addEventListener('change', saveEffectSettings);
 
-    navigator.mediaDevices?.addEventListener('devicechange', loadDevices);
+    navigator.mediaDevices?.addEventListener('devicechange', () => {
+        void loadDevices(false);
+    });
 
     applyMirror();
     applyOverlayVisibility();
@@ -4127,7 +4375,7 @@
     initMediaRefresh();
 
     if (navigator.mediaDevices?.getUserMedia) {
-        loadDevices();
+        void loadDevices(true);
     } else {
         elements.cameraError.classList.remove('hidden');
         elements.cameraError.textContent = 'Camera API not supported in this browser.';
