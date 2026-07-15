@@ -21,9 +21,9 @@ test('quality levels expose the required three encodings', () => {
             level.maxFramerate
         ]),
         [
-            [1, 4_500_000, 30],
-            [4 / 3, 3_000_000, 30],
-            [2, 1_500_000, 24]
+            [1, 3_000_000, 30],
+            [4 / 3, 2_000_000, 30],
+            [2, 1_000_000, 24]
         ]
     );
 });
@@ -87,4 +87,21 @@ test('sample assessment reports all congestion signals', () => {
 
     assert.equal(assessment.healthy, false);
     assert.equal(assessment.reasons.length, 5);
+});
+
+test('sample assessment catches receiver recovery and encoder overload signals', () => {
+    const assessment = assessNetworkSample({
+        retransmitRatio: 0.08,
+        nackRatio: 0.04,
+        pictureLossIndications: 1,
+        encodeTimePerFrame: 0.05
+    }, QUALITY_LEVELS.high);
+
+    assert.equal(assessment.healthy, false);
+    assert.deepEqual(assessment.reasons, [
+        'retransmissions',
+        'negative-acknowledgements',
+        'decoder-picture-loss',
+        'encoder-overload'
+    ]);
 });

@@ -6,7 +6,7 @@ export const QUALITY_LEVELS = Object.freeze({
         width: 720,
         height: 1280,
         scaleResolutionDownBy: 1,
-        maxBitrate: 4_500_000,
+        maxBitrate: 3_000_000,
         maxFramerate: 30
     }),
     medium: Object.freeze({
@@ -14,7 +14,7 @@ export const QUALITY_LEVELS = Object.freeze({
         width: 540,
         height: 960,
         scaleResolutionDownBy: 4 / 3,
-        maxBitrate: 3_000_000,
+        maxBitrate: 2_000_000,
         maxFramerate: 30
     }),
     low: Object.freeze({
@@ -22,7 +22,7 @@ export const QUALITY_LEVELS = Object.freeze({
         width: 360,
         height: 640,
         scaleResolutionDownBy: 2,
-        maxBitrate: 1_500_000,
+        maxBitrate: 1_000_000,
         maxFramerate: 24
     })
 });
@@ -35,6 +35,9 @@ const DEFAULT_OPTIONS = Object.freeze({
     healthySamplesToStepUp: 10,
     stepUpCooldownMs: 20_000,
     maximumLossRatio: 0.03,
+    maximumRetransmitRatio: 0.03,
+    maximumNackRatio: 0.02,
+    maximumEncodeTimePerFrame: 0.03,
     maximumRttSeconds: 0.4,
     minimumFpsRatio: 0.8,
     minimumAvailableBitrateRatio: 1.15
@@ -49,6 +52,24 @@ export function assessNetworkSample(sample, level, options = DEFAULT_OPTIONS) {
 
     if (finiteNumber(sample.lossRatio) && sample.lossRatio > options.maximumLossRatio) {
         reasons.push('packet-loss');
+    }
+    if (
+        finiteNumber(sample.retransmitRatio)
+        && sample.retransmitRatio > options.maximumRetransmitRatio
+    ) {
+        reasons.push('retransmissions');
+    }
+    if (finiteNumber(sample.nackRatio) && sample.nackRatio > options.maximumNackRatio) {
+        reasons.push('negative-acknowledgements');
+    }
+    if (finiteNumber(sample.pictureLossIndications) && sample.pictureLossIndications > 0) {
+        reasons.push('decoder-picture-loss');
+    }
+    if (
+        finiteNumber(sample.encodeTimePerFrame)
+        && sample.encodeTimePerFrame > options.maximumEncodeTimePerFrame
+    ) {
+        reasons.push('encoder-overload');
     }
     if (finiteNumber(sample.rttSeconds) && sample.rttSeconds > options.maximumRttSeconds) {
         reasons.push('round-trip-time');

@@ -1,7 +1,7 @@
-import { AudioMixer } from './stream/audio-mixer.js';
-import { AdaptiveQualityPolicy } from './stream/adaptive-quality.js';
-import { PublishSource, detectInsertableVideoSupport } from './stream/publish-source.js';
-import { WhipSession } from './stream/whip-session.js';
+import { AudioMixer } from './stream/audio-mixer.js?v=20260715d';
+import { AdaptiveQualityPolicy } from './stream/adaptive-quality.js?v=20260715d';
+import { PublishSource, detectInsertableVideoSupport } from './stream/publish-source.js?v=20260715d';
+import { WhipSession } from './stream/whip-session.js?v=20260715d';
 
 (function () {
     'use strict';
@@ -988,11 +988,17 @@ import { WhipSession } from './stream/whip-session.js';
         const fps = Math.round(stats.framesPerSecond || 0);
         const dimensions = stats.width && stats.height ? ` • ${stats.width}×${stats.height}` : '';
         const loss = stats.lossRatio >= 0.001 ? ` • ${(stats.lossRatio * 100).toFixed(1)}% loss` : '';
+        const recovery = stats.retransmitRatio >= 0.001
+            ? ` • ${(stats.retransmitRatio * 100).toFixed(1)}% retry`
+            : '';
+        const decoderLoss = stats.pictureLossIndications > 0
+            ? ` • ${stats.pictureLossIndications} decoder recovery`
+            : '';
         const rtt = Number.isFinite(stats.rttSeconds) ? ` • ${Math.round(stats.rttSeconds * 1000)}ms` : '';
         const limitation = stats.qualityLimitationReason !== 'none'
             ? ` • limited by ${stats.qualityLimitationReason}`
             : '';
-        return `WHIP ${codec} • ${stats.qualityLevel} • ${bitrate} Mbps • ${fps} FPS${dimensions}${loss}${rtt}${limitation}`;
+        return `WHIP ${codec} • ${stats.qualityLevel} • ${bitrate} Mbps • ${fps} FPS${dimensions}${loss}${recovery}${decoderLoss}${rtt}${limitation}`;
     }
 
     function createWhipSession(endpoint) {
@@ -1010,6 +1016,8 @@ import { WhipSession } from './stream/whip-session.js';
             }),
             onStats: (stats) => {
                 const unhealthy = stats.lossRatio >= 0.03
+                    || stats.retransmitRatio >= 0.03
+                    || stats.pictureLossIndications > 0
                     || stats.qualityLimitationReason !== 'none';
                 updateStreamOutputStatus(
                     formatWhipStats(stats),
@@ -1045,7 +1053,8 @@ import { WhipSession } from './stream/whip-session.js';
         const previousSession = activeWhipSession;
         activeWhipSession = null;
         await previousSession?.stop();
-        await new Promise((resolve) => window.setTimeout(resolve, reconnectAttempt * 1000));
+        const retryDelayMs = Math.min(5_000, reconnectAttempt * 2_000);
+        await new Promise((resolve) => window.setTimeout(resolve, retryDelayMs));
 
         if (!isOutputStreaming || !activePublishSource) {
             return;

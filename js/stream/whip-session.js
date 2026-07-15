@@ -4,7 +4,7 @@ import {
     AdaptiveQualityPolicy,
     QUALITY_LEVELS,
     STATS_INTERVAL_MS
-} from './adaptive-quality.js';
+} from './adaptive-quality.js?v=20260715d';
 
 const DEFAULT_ICE_TIMEOUT_MS = 12_000;
 const DEFAULT_HTTP_TIMEOUT_MS = 15_000;
@@ -57,7 +57,8 @@ function parseMediaSection(section) {
 }
 
 function selectedPayloadsForVideo(parsed) {
-    const selected = new Set();
+    const constrainedBaseline = [];
+    const baseline = [];
 
     for (const payload of parsed.payloads) {
         if (parsed.codecs.get(payload) !== 'h264') {
@@ -66,11 +67,18 @@ function selectedPayloadsForVideo(parsed) {
         const format = parsed.formats.get(payload) ?? '';
         const packetizationModeOne = /(?:^|;)\s*packetization-mode=1(?:;|$)/.test(format);
         const profile = format.match(/profile-level-id=([0-9a-f]{6})/)?.[1];
-        if (packetizationModeOne && profile?.startsWith('42')) {
-            selected.add(payload);
+        if (!packetizationModeOne || !profile?.startsWith('42')) {
+            continue;
+        }
+        baseline.push(payload);
+        if (profile.startsWith('42e0')) {
+            constrainedBaseline.push(payload);
         }
     }
 
+    const selected = new Set(
+        constrainedBaseline.length > 0 ? constrainedBaseline : baseline
+    );
     if (selected.size === 0) {
         throw new Error('Offer has no H264 baseline packetization-mode=1 payload');
     }
@@ -146,12 +154,16 @@ export function chooseWhipCodecPreferences(kind, capabilities) {
         return /packetization-mode=1/.test(format)
             && /profile-level-id=42[0-9a-f]{4}/.test(format);
     });
+    const constrainedBaseline = h264.filter((codec) => (
+        /profile-level-id=42e0[0-9a-f]{2}/.test(codec.sdpFmtpLine?.toLowerCase() ?? '')
+    ));
+    const preferredH264 = constrainedBaseline.length > 0 ? constrainedBaseline : h264;
     const repair = codecs.filter((codec) => [
         'video/rtx',
         'video/red',
         'video/ulpfec'
     ].includes(codec.mimeType.toLowerCase()));
-    return [...h264, ...repair];
+    return [...preferredH264, ...repair];
 }
 
 function waitForIceGathering(peerConnection, timeoutMs, signal) {
@@ -192,11 +204,16 @@ function trackByKind(stream, kind) {
 function freezeStats(stats) {
     return Object.freeze({
         codec: stats.codec ?? null,
+        encoderImplementation: stats.encoderImplementation ?? null,
         width: stats.width ?? null,
         height: stats.height ?? null,
         framesPerSecond: stats.framesPerSecond ?? null,
         bitrate: stats.bitrate ?? 0,
         lossRatio: stats.lossRatio ?? 0,
+        retransmitRatio: stats.retransmitRatio ?? 0,
+        nackRatio: stats.nackRatio ?? 0,
+        pictureLossIndications: stats.pictureLossIndications ?? 0,
+        encodeTimePerFrame: stats.encodeTimePerFrame ?? null,
         rttSeconds: stats.rttSeconds ?? null,
         qualityLimitationReason: stats.qualityLimitationReason ?? 'none',
         availableOutgoingBitrate: stats.availableOutgoingBitrate ?? null,
@@ -429,11 +446,15 @@ export class WhipSession {
             if (!this.videoSender) {
                 return;
             }
-            const parameters = this.videoSender.getParameters();
-            if (!parameters.encodings?.length) {
-                return;
-            }
             try {
+                if (typeof this.videoSender.generateKeyFrame === 'function') {
+                    await this.videoSender.generateKeyFrame();
+                    return;
+                }
+                const parameters = this.videoSender.getParameters();
+                if (!parameters.encodings?.length) {
+                    return;
+                }
                 await this.videoSender.setParameters(parameters, {
                     encodingOptions: parameters.encodings.map(() => ({ keyFrame: true }))
                 });
@@ -445,7 +466,7 @@ export class WhipSession {
         void requestKeyframe();
         this.keyframeTimer = setInterval(() => {
             void requestKeyframe();
-        }, 2_000);
+        }, 1_000);
     }
 
     async collectStats() {
@@ -476,6 +497,24 @@ export class WhipSession {
         const packetsDelta = previous
             ? Math.max(0, outbound.packetsSent - previous.packetsSent)
             : 0;
+        const retransmittedPackets = outbound.retransmittedPacketsSent ?? 0;
+        const retransmittedDelta = previous
+            ? Math.max(0, retransmittedPackets - previous.retransmittedPackets)
+            : 0;
+        const nackCount = outbound.nackCount ?? 0;
+        const nackDelta = previous ? Math.max(0, nackCount - previous.nackCount) : 0;
+        const pictureLossIndications = (outbound.pliCount ?? 0) + (outbound.firCount ?? 0);
+        const pictureLossDelta = previous
+            ? Math.max(0, pictureLossIndications - previous.pictureLossIndications)
+            : 0;
+        const framesEncoded = outbound.framesEncoded ?? 0;
+        const framesDelta = previous
+            ? Math.max(0, framesEncoded - previous.framesEncoded)
+            : 0;
+        const totalEncodeTime = outbound.totalEncodeTime ?? 0;
+        const encodeTimeDelta = previous
+            ? Math.max(0, totalEncodeTime - previous.totalEncodeTime)
+            : 0;
         const remoteInbound = byId.get(outbound.remoteId)
             ?? [...byId.values()].find((item) => (
                 item.type === 'remote-inbound-rtp'
@@ -494,11 +533,16 @@ export class WhipSession {
             : 0;
         const stats = freezeStats({
             codec: codec?.mimeType,
+            encoderImplementation: outbound.encoderImplementation,
             width: outbound.frameWidth,
             height: outbound.frameHeight,
             framesPerSecond: outbound.framesPerSecond,
             bitrate: elapsedSeconds > 0 ? bytesDelta * 8 / elapsedSeconds : 0,
             lossRatio,
+            retransmitRatio: packetsDelta > 0 ? retransmittedDelta / packetsDelta : 0,
+            nackRatio: packetsDelta > 0 ? nackDelta / packetsDelta : 0,
+            pictureLossIndications: pictureLossDelta,
+            encodeTimePerFrame: framesDelta > 0 ? encodeTimeDelta / framesDelta : null,
             rttSeconds: remoteInbound?.roundTripTime ?? candidatePair?.currentRoundTripTime,
             qualityLimitationReason: outbound.qualityLimitationReason,
             availableOutgoingBitrate: candidatePair?.availableOutgoingBitrate,
@@ -508,7 +552,12 @@ export class WhipSession {
             timestamp: now,
             bytesSent: outbound.bytesSent,
             packetsSent: outbound.packetsSent,
-            packetsLost: lostTotal
+            packetsLost: lostTotal,
+            retransmittedPackets,
+            nackCount,
+            pictureLossIndications,
+            framesEncoded,
+            totalEncodeTime
         };
 
         const decision = this.policy.evaluate(stats, Date.now());

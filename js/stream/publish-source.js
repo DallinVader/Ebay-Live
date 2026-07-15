@@ -4,7 +4,7 @@ import {
     COMPOSITION_FPS,
     COMPOSITION_HEIGHT,
     COMPOSITION_WIDTH
-} from './composition-math.js';
+} from './composition-math.js?v=20260715d';
 
 export function detectInsertableVideoSupport(scope = globalThis) {
     const Processor = scope.MediaStreamTrackProcessor;
@@ -79,7 +79,7 @@ export class PublishSource {
         height = COMPOSITION_HEIGHT,
         fps = COMPOSITION_FPS,
         initialState = {},
-        workerUrl = new URL('./compositor-worker.js', import.meta.url),
+        workerUrl = new URL('./compositor-worker.js?v=20260715d', import.meta.url),
         scope = globalThis,
         onError = () => {}
     }) {
@@ -100,6 +100,7 @@ export class PublishSource {
         const generated = createGenerator(this.support);
         this.generator = generated.generator;
         this.videoTrack = generated.track;
+        this.videoTrack.contentHint = 'motion';
         this.worker = new scope.Worker(workerUrl, { type: 'module' });
         this.stopped = false;
         let resolveReady;

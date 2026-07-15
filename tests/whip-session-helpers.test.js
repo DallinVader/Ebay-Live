@@ -21,10 +21,14 @@ const OFFER_SDP = [
     'm=audio 9 UDP/TLS/RTP/SAVPF 111 9',
     'a=rtpmap:111 opus/48000/2',
     'a=rtpmap:9 G722/8000',
-    'm=video 9 UDP/TLS/RTP/SAVPF 96 97 98 99 100 101',
+    'm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103 98 99 100 101',
     'a=rtpmap:96 VP8/90000',
     'a=rtpmap:97 rtx/90000',
     'a=fmtp:97 apt=96',
+    'a=rtpmap:102 H264/90000',
+    'a=fmtp:102 packetization-mode=1;profile-level-id=42001f',
+    'a=rtpmap:103 rtx/90000',
+    'a=fmtp:103 apt=102',
     'a=rtpmap:98 H264/90000',
     'a=fmtp:98 packetization-mode=1;profile-level-id=42e01f',
     'a=rtpmap:99 rtx/90000',
@@ -51,6 +55,7 @@ test('SDP selection retains only Opus, baseline H264, and repair codecs', () => 
     assert.doesNotMatch(selected, /G722|a=rtpmap:9 /);
     assert.match(selected, /m=video .+ 98 99 100 101\r\n/);
     assert.doesNotMatch(selected, /VP8|a=rtpmap:96 |a=rtpmap:97 /);
+    assert.doesNotMatch(selected, /a=rtpmap:102 |a=rtpmap:103 /);
     assert.match(selected, /profile-level-id=42e01f/);
 });
 
@@ -58,6 +63,10 @@ test('codec capabilities select H264 baseline repairs and Opus', () => {
     const capabilities = {
         codecs: [
             { mimeType: 'video/VP8' },
+            {
+                mimeType: 'video/H264',
+                sdpFmtpLine: 'packetization-mode=1;profile-level-id=42001f'
+            },
             {
                 mimeType: 'video/H264',
                 sdpFmtpLine: 'packetization-mode=1;profile-level-id=42e01f'
@@ -70,8 +79,15 @@ test('codec capabilities select H264 baseline repairs and Opus', () => {
     };
 
     assert.deepEqual(
-        chooseWhipCodecPreferences('video', capabilities).map((codec) => codec.mimeType),
-        ['video/H264', 'video/rtx', 'video/red', 'video/ulpfec']
+        chooseWhipCodecPreferences('video', capabilities).map((codec) => (
+            codec.sdpFmtpLine || codec.mimeType
+        )),
+        [
+            'packetization-mode=1;profile-level-id=42e01f',
+            'video/rtx',
+            'video/red',
+            'video/ulpfec'
+        ]
     );
     assert.deepEqual(
         chooseWhipCodecPreferences('audio', capabilities).map((codec) => codec.mimeType),
@@ -108,11 +124,13 @@ test('WHIP session posts the offer, configures adaptive video, and deletes the r
             const sender = {
                 track,
                 parameters: { encodings: [{}] },
+                setCalls: [],
                 getParameters() {
                     return this.parameters;
                 },
-                async setParameters(parameters) {
+                async setParameters(parameters, options) {
                     this.parameters = parameters;
+                    this.setCalls.push({ parameters, options });
                 }
             };
             this.senders.push(sender);
@@ -190,7 +208,13 @@ test('WHIP session posts the offer, configures adaptive video, and deletes the r
     await session.start();
     assert.equal(session.resourceUrl, 'https://ingest.example.test/session/123');
     assert.equal(peerConnection.senders[0].parameters.degradationPreference, 'maintain-framerate');
-    assert.equal(peerConnection.senders[0].parameters.encodings[0].maxBitrate, 4_500_000);
+    assert.equal(peerConnection.senders[0].parameters.encodings[0].maxBitrate, 3_000_000);
+    assert.equal(
+        peerConnection.senders[0].setCalls.some((call) => (
+            call.options?.encodingOptions?.[0]?.keyFrame === true
+        )),
+        true
+    );
     await session.stop();
 
     assert.deepEqual(requests, [

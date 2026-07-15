@@ -10,7 +10,7 @@ import {
     soldBannerGeometry,
     soldValues,
     timelineProgress
-} from './composition-math.js';
+} from './composition-math.js?v=20260715d';
 
 const scope = globalThis;
 let canvas = null;
@@ -207,7 +207,8 @@ async function renderAt(deadline) {
 
     const outputFrame = new VideoFrame(canvas, {
         timestamp: Math.round((frameNumber * 1_000_000) / settings.fps),
-        duration: Math.round(1_000_000 / settings.fps)
+        duration: Math.round(1_000_000 / settings.fps),
+        alpha: 'discard'
     });
     try {
         await writer.write(outputFrame);
@@ -286,7 +287,7 @@ function initialize(message) {
     });
     state = Object.freeze({ ...state, ...(message.state ?? {}) });
     canvas = new OffscreenCanvas(settings.width, settings.height);
-    context = canvas.getContext('2d', { alpha: false, desynchronized: true });
+    context = canvas.getContext('2d', { alpha: false });
     if (!context) {
         throw new Error('Unable to create OffscreenCanvas 2D context');
     }
