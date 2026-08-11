@@ -53,12 +53,26 @@ function sendJson(res, status, data) {
     res.end(JSON.stringify(data));
 }
 
+function pairEffects(images, sounds) {
+    if (!images.length) {
+        return [];
+    }
+
+    return images.map((image, index) => ({
+        image,
+        sound: sounds.length ? sounds[index % sounds.length] : null,
+    }));
+}
+
 function buildMediaIndex() {
     const index = {};
 
     Object.keys(FOLDER_PATTERNS).forEach((folderName) => {
         index[folderName] = listFolder(folderName);
     });
+
+    // Pair each graphic with a sound by sorted list order (sounds cycle if fewer).
+    index.Effects = pairEffects(index.Images, index.Sound);
 
     return index;
 }

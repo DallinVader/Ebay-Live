@@ -64,10 +64,9 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         musicPlayer: document.getElementById('music-player'),
         effectImageUpload: document.getElementById('effect-image-upload'),
         effectImageClearBtn: document.getElementById('effect-image-clear-btn'),
-        effectImageList: document.getElementById('effect-image-list'),
         effectSoundUpload: document.getElementById('effect-sound-upload'),
         effectSoundClearBtn: document.getElementById('effect-sound-clear-btn'),
-        effectSoundList: document.getElementById('effect-sound-list'),
+        effectPairList: document.getElementById('effect-pair-list'),
         effectSfxVolume: document.getElementById('effect-sfx-volume'),
         effectSfxVolumeValue: document.getElementById('effect-sfx-volume-value'),
         effectSfxToggle: document.getElementById('effect-sfx-toggle'),
@@ -116,6 +115,10 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
 
     let effectImages = [];
     let effectSounds = [];
+    let effectPairSlots = [];
+    let effectPairIdCounter = 0;
+    let knownEffectImageIds = new Set();
+    let savedEffectPairPrefs = null;
     let musicTracks = [];
     let currentMusicId = null;
     let musicIdCounter = 0;
@@ -151,6 +154,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
     let suppressStreamTap = false;
 
     const EFFECT_SETTINGS_KEY = 'ebayLiveEffectSettings';
+    const EFFECT_PAIRS_KEY = 'ebayLiveEffectPairs';
     const SOLD_IMAGE_SETTINGS_KEY = 'ebayLiveSoldImage';
     const HIDDEN_MEDIA_KEY = 'ebayLiveHiddenMedia';
     const ASSET_DB_NAME = 'ebayLiveAssetCache';
@@ -447,6 +451,10 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
 
         effectImages = [];
         effectSounds = [];
+        effectPairSlots = [];
+        knownEffectImageIds = new Set();
+        savedEffectPairPrefs = null;
+        localStorage.removeItem(EFFECT_PAIRS_KEY);
         musicTracks = [];
         effectSoundBufferCache.clear();
         resetSoundRepeatTracking();
@@ -2574,17 +2582,17 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         const folderImages = mapFolderFiles('Images', filterVisibleFolderFiles('Images', index.Images));
         const uploadedImages = effectImages.filter((image) => !image.isDefault);
         effectImages = [...folderImages, ...uploadedImages];
-        renderEffectImageList();
 
         const folderSounds = mapFolderFiles('Sound', filterVisibleFolderFiles('Sound', index.Sound));
         const uploadedSounds = effectSounds.filter((sound) => !sound.isDefault);
         effectSounds = [...folderSounds, ...uploadedSounds];
-        renderEffectSoundList();
 
         const folderTracks = mapFolderFiles('Music', filterVisibleFolderFiles('Music', index.Music));
         const uploadedTracks = musicTracks.filter((track) => !track.isDefault);
         musicTracks = [...folderTracks, ...uploadedTracks];
         renderMusicList();
+        syncEffectPairSlots();
+        renderEffectPairList();
     }
 
     async function refreshAllMediaFromFolders() {
@@ -2617,24 +2625,246 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         }));
     }
 
-    function renderEffectImageList() {
-        if (!effectImages.length) {
-            elements.effectImageList.innerHTML = '<li class="effect-empty">No images — add files to the Images folder or upload your own.</li>';
+    function escapeHtml(value) {
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function findAssetByRef(list, ref) {
+        if (!ref || !list.length) {
+            return null;
+        }
+
+        if (typeof ref === 'string') {
+            return list.find((item) => item.id === ref || item.name === ref) || null;
+        }
+
+        return list.find((item) => item.id === ref.id || (ref.name && item.name === ref.name)) || null;
+    }
+
+    function buildDefaultPairSlots() {
+        return effectImages.map((image, index) => ({
+            id: `pair-${++effectPairIdCounter}`,
+            imageId: image.id,
+            soundId: effectSounds.length ? effectSounds[index % effectSounds.length].id : null,
+        }));
+    }
+
+    function restoreSlotsFromPrefs(prefs) {
+        return prefs.map((pref) => {
+            const image = findAssetByRef(effectImages, pref.image);
+            const sound = findAssetByRef(effectSounds, pref.sound);
+
+            if (pref.id?.startsWith('pair-')) {
+                const value = Number(pref.id.slice(5));
+                if (Number.isFinite(value)) {
+                    effectPairIdCounter = Math.max(effectPairIdCounter, value);
+                }
+            }
+
+            return {
+                id: pref.id || `pair-${++effectPairIdCounter}`,
+                imageId: image?.id ?? null,
+                soundId: sound?.id ?? null,
+            };
+        }).filter((slot) => slot.imageId || slot.soundId);
+    }
+
+    function saveEffectPairs() {
+        const payload = effectPairSlots.map((slot) => {
+            const image = effectImages.find((item) => item.id === slot.imageId);
+            const sound = effectSounds.find((item) => item.id === slot.soundId);
+
+            return {
+                id: slot.id,
+                image: image ? { id: image.id, name: image.name } : null,
+                sound: sound ? { id: sound.id, name: sound.name } : null,
+            };
+        });
+
+        savedEffectPairPrefs = payload;
+        localStorage.setItem(EFFECT_PAIRS_KEY, JSON.stringify(payload));
+    }
+
+    function loadEffectPairPrefs() {
+        try {
+            const raw = localStorage.getItem(EFFECT_PAIRS_KEY);
+            if (!raw) {
+                savedEffectPairPrefs = null;
+                return;
+            }
+
+            const parsed = JSON.parse(raw);
+            savedEffectPairPrefs = Array.isArray(parsed) ? parsed : null;
+        } catch {
+            savedEffectPairPrefs = null;
+        }
+    }
+
+    function syncEffectPairSlots() {
+        if (!effectPairSlots.length && Array.isArray(savedEffectPairPrefs) && savedEffectPairPrefs.length) {
+            effectPairSlots = restoreSlotsFromPrefs(savedEffectPairPrefs);
+        }
+
+        if (!effectPairSlots.length) {
+            effectPairSlots = buildDefaultPairSlots();
+            knownEffectImageIds = new Set(effectImages.map((image) => image.id));
+            saveEffectPairs();
+            return;
+        }
+
+        effectPairSlots = effectPairSlots.map((slot) => {
+            const imageExists = effectImages.some((item) => item.id === slot.imageId);
+            const soundExists = effectSounds.some((item) => item.id === slot.soundId);
+            let { imageId, soundId } = slot;
+
+            if (!imageExists && slot.imageId) {
+                const pref = savedEffectPairPrefs?.find((item) => item.id === slot.id);
+                imageId = findAssetByRef(effectImages, pref?.image)?.id ?? null;
+            }
+
+            if (!soundExists && slot.soundId) {
+                const pref = savedEffectPairPrefs?.find((item) => item.id === slot.id);
+                soundId = findAssetByRef(effectSounds, pref?.sound)?.id ?? null;
+            }
+
+            return {
+                ...slot,
+                imageId,
+                soundId,
+            };
+        }).filter((slot) => slot.imageId || slot.soundId);
+
+        if (knownEffectImageIds.size > 0) {
+            const newImages = effectImages.filter((image) => !knownEffectImageIds.has(image.id));
+            newImages.forEach((image, index) => {
+                effectPairSlots.push({
+                    id: `pair-${++effectPairIdCounter}`,
+                    imageId: image.id,
+                    soundId: effectSounds.length
+                        ? effectSounds[(effectPairSlots.length + index) % effectSounds.length].id
+                        : null,
+                });
+            });
+        }
+
+        knownEffectImageIds = new Set(effectImages.map((image) => image.id));
+        saveEffectPairs();
+    }
+
+    function getEffectPairs() {
+        return effectPairSlots.map((slot) => ({
+            id: slot.id,
+            image: effectImages.find((item) => item.id === slot.imageId) || null,
+            sound: effectSounds.find((item) => item.id === slot.soundId) || null,
+        }));
+    }
+
+    function buildAssetOptions(list, selectedId, emptyLabel) {
+        const options = [`<option value="">${escapeHtml(emptyLabel)}</option>`];
+
+        list.forEach((item) => {
+            const selected = item.id === selectedId ? ' selected' : '';
+            options.push(
+                `<option value="${escapeHtml(item.id)}"${selected}>${escapeHtml(item.name)}</option>`
+            );
+        });
+
+        return options.join('');
+    }
+
+    function renderEffectPairList() {
+        if (!effectImages.length && !effectSounds.length) {
+            elements.effectPairList.innerHTML = '<li class="effect-empty">No effects — add files to the Images/Sound folders or upload your own.</li>';
             elements.effectTestBtn.disabled = true;
             return;
         }
 
-        elements.effectTestBtn.disabled = false;
-        elements.effectImageList.innerHTML = effectImages.map((image) => `
-            <li class="effect-image-item">
-                <img src="${image.url}" alt="${image.name}">
-                <button type="button" class="effect-remove" data-id="${image.id}" aria-label="Remove ${image.name}">×</button>
-            </li>
-        `).join('');
+        const pairs = getEffectPairs();
+        elements.effectTestBtn.disabled = !pairs.some((pair) => pair.image);
 
-        elements.effectImageList.querySelectorAll('.effect-remove').forEach((btn) => {
-            btn.addEventListener('click', () => removeEffectImage(btn.dataset.id));
+        if (!pairs.length) {
+            elements.effectPairList.innerHTML = '<li class="effect-empty">No effect pairs yet — upload a graphic to create one.</li>';
+            return;
+        }
+
+        elements.effectPairList.innerHTML = pairs.map((pair) => {
+            const thumb = pair.image
+                ? `<img src="${pair.image.url}" alt="${escapeHtml(pair.image.name)}">`
+                : '<span class="effect-pair-thumb-empty">SFX</span>';
+
+            return `
+                <li class="effect-pair-item" data-pair-id="${escapeHtml(pair.id)}">
+                    <div class="effect-pair-thumb">
+                        ${thumb}
+                    </div>
+                    <div class="effect-pair-meta">
+                        <label class="effect-pair-field">
+                            <span>Graphic</span>
+                            <select class="effect-pair-image-select" data-pair-id="${escapeHtml(pair.id)}" aria-label="Graphic for this effect">
+                                ${buildAssetOptions(effectImages, pair.image?.id || '', 'No graphic')}
+                            </select>
+                        </label>
+                        <label class="effect-pair-field">
+                            <span>Sound</span>
+                            <select class="effect-pair-sound-select" data-pair-id="${escapeHtml(pair.id)}" aria-label="Sound for this effect">
+                                ${buildAssetOptions(effectSounds, pair.sound?.id || '', 'No sound')}
+                            </select>
+                        </label>
+                    </div>
+                    <div class="effect-pair-actions">
+                        <button type="button" class="effect-remove" data-kind="pair" data-id="${escapeHtml(pair.id)}" aria-label="Remove this effect pair">Remove</button>
+                    </div>
+                </li>
+            `;
+        }).join('');
+
+        elements.effectPairList.querySelectorAll('.effect-pair-image-select').forEach((select) => {
+            select.addEventListener('change', () => {
+                updateEffectPairSlot(select.dataset.pairId, { imageId: select.value || null });
+            });
         });
+
+        elements.effectPairList.querySelectorAll('.effect-pair-sound-select').forEach((select) => {
+            select.addEventListener('change', () => {
+                updateEffectPairSlot(select.dataset.pairId, { soundId: select.value || null });
+            });
+        });
+
+        elements.effectPairList.querySelectorAll('.effect-remove').forEach((btn) => {
+            btn.addEventListener('click', () => removeEffectPairSlot(btn.dataset.id));
+        });
+    }
+
+    function updateEffectPairSlot(pairId, changes) {
+        const slot = effectPairSlots.find((item) => item.id === pairId);
+        if (!slot) {
+            return;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(changes, 'imageId')) {
+            slot.imageId = changes.imageId;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(changes, 'soundId')) {
+            slot.soundId = changes.soundId;
+        }
+
+        if (!slot.imageId && !slot.soundId) {
+            effectPairSlots = effectPairSlots.filter((item) => item.id !== pairId);
+        }
+
+        saveEffectPairs();
+        renderEffectPairList();
+    }
+
+    function removeEffectPairSlot(pairId) {
+        effectPairSlots = effectPairSlots.filter((item) => item.id !== pairId);
+        saveEffectPairs();
+        renderEffectPairList();
     }
 
     function clearEffectImages() {
@@ -2647,7 +2877,12 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         });
 
         effectImages = [];
-        renderEffectImageList();
+        effectPairSlots = effectPairSlots
+            .map((slot) => ({ ...slot, imageId: null }))
+            .filter((slot) => slot.soundId);
+        knownEffectImageIds = new Set();
+        saveEffectPairs();
+        renderEffectPairList();
     }
 
     function handleEffectImageUpload(event) {
@@ -2664,9 +2899,18 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
 
                 const image = await cacheUploadedFile('image', file);
                 effectImages.push(image);
+                effectPairSlots.push({
+                    id: `pair-${++effectPairIdCounter}`,
+                    imageId: image.id,
+                    soundId: effectSounds.length
+                        ? effectSounds[effectPairSlots.length % effectSounds.length].id
+                        : null,
+                });
+                knownEffectImageIds.add(image.id);
             }
 
-            renderEffectImageList();
+            saveEffectPairs();
+            renderEffectPairList();
         })();
 
         event.target.value = '';
@@ -2681,25 +2925,12 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         }
 
         effectImages = effectImages.filter((item) => item.id !== id);
-        renderEffectImageList();
-    }
-
-    function renderEffectSoundList() {
-        if (!effectSounds.length) {
-            elements.effectSoundList.innerHTML = '<li class="effect-empty">No sounds — add files to the Sound folder or upload your own.</li>';
-            return;
-        }
-
-        elements.effectSoundList.innerHTML = effectSounds.map((sound) => `
-            <li class="effect-sound-item">
-                <span class="effect-sound-name" title="${sound.name}">${sound.name}</span>
-                <button type="button" class="effect-remove" data-id="${sound.id}" aria-label="Remove ${sound.name}">×</button>
-            </li>
-        `).join('');
-
-        elements.effectSoundList.querySelectorAll('.effect-remove').forEach((btn) => {
-            btn.addEventListener('click', () => removeEffectSound(btn.dataset.id));
-        });
+        effectPairSlots = effectPairSlots
+            .map((slot) => (slot.imageId === id ? { ...slot, imageId: null } : slot))
+            .filter((slot) => slot.imageId || slot.soundId);
+        knownEffectImageIds.delete(id);
+        saveEffectPairs();
+        renderEffectPairList();
     }
 
     function clearEffectSounds() {
@@ -2713,8 +2944,10 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         });
 
         effectSounds = [];
+        effectPairSlots = effectPairSlots.map((slot) => ({ ...slot, soundId: null }));
         resetSoundRepeatTracking();
-        renderEffectSoundList();
+        saveEffectPairs();
+        renderEffectPairList();
     }
 
     function handleEffectSoundUpload(event) {
@@ -2733,7 +2966,8 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
                 effectSounds.push(sound);
             }
 
-            renderEffectSoundList();
+            renderEffectPairList();
+            saveEffectPairs();
         })();
 
         event.target.value = '';
@@ -2749,7 +2983,11 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         }
 
         effectSounds = effectSounds.filter((item) => item.id !== id);
-        renderEffectSoundList();
+        effectPairSlots = effectPairSlots.map((slot) => (
+            slot.soundId === id ? { ...slot, soundId: null } : slot
+        ));
+        saveEffectPairs();
+        renderEffectPairList();
     }
 
     function updateEffectSfxVolume() {
@@ -2865,6 +3103,35 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         consecutiveSameSoundCount = 0;
     }
 
+    function pickEffectPair() {
+        const pairs = getEffectPairs().filter((pair) => pair.image);
+        if (!pairs.length) {
+            return null;
+        }
+
+        let pool = pairs;
+
+        if (lastPlayedSoundId && consecutiveSameSoundCount >= MAX_CONSECUTIVE_SAME_SOUND && pairs.length > 1) {
+            const filtered = pairs.filter((pair) => pair.sound?.id !== lastPlayedSoundId);
+            if (filtered.length) {
+                pool = filtered;
+            }
+        }
+
+        const pair = pool[Math.floor(Math.random() * pool.length)];
+
+        if (pair.sound) {
+            if (pair.sound.id === lastPlayedSoundId) {
+                consecutiveSameSoundCount++;
+            } else {
+                lastPlayedSoundId = pair.sound.id;
+                consecutiveSameSoundCount = 1;
+            }
+        }
+
+        return pair;
+    }
+
     function pickEffectSound() {
         let pool = effectSounds;
 
@@ -2884,23 +3151,34 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         return sound;
     }
 
-    function playEffectSound() {
-        if (!elements.effectSfxToggle.checked || !effectSounds.length) {
+    function playSoundUrl(url) {
+        if (!url) {
             return;
         }
-
-        const sound = pickEffectSound();
 
         if (streamAudioMixActive && streamSfxGain) {
-            void playEffectSoundThroughMix(sound.url);
+            void playEffectSoundThroughMix(url);
             return;
         }
 
-        const player = new Audio(sound.url);
+        const player = new Audio(url);
         player.volume = elements.effectSfxVolume.value / 100;
         player.play().catch(() => {
             // Autoplay may be blocked until user interaction.
         });
+    }
+
+    function playEffectSound(sound = null) {
+        if (!elements.effectSfxToggle.checked) {
+            return;
+        }
+
+        const selected = sound || (effectSounds.length ? pickEffectSound() : null);
+        if (!selected) {
+            return;
+        }
+
+        playSoundUrl(selected.url);
     }
 
     function getEffectPositionFromPointer(container, clientX, clientY) {
@@ -2923,12 +3201,11 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         };
     }
 
-    function spawnEffectOnLayer(layer, position = null) {
-        if (!effectImages.length) {
+    function spawnEffectOnLayer(layer, image, position = null) {
+        if (!image) {
             return;
         }
 
-        const image = effectImages[Math.floor(Math.random() * effectImages.length)];
         const config = getEffectConfig();
         const size = randomBetween(config.sizeMin, config.sizeMax);
         const rotation = randomBetween(config.rotationMin, config.rotationMax);
@@ -3089,8 +3366,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         return createImageBitmap(await response.blob());
     }
 
-    async function spawnPublishedEffect(position) {
-        const image = effectImages[Math.floor(Math.random() * effectImages.length)];
+    async function spawnPublishedEffect(image, position) {
         const config = getEffectConfig();
         const size = randomBetween(config.sizeMin, config.sizeMax);
         const rotation = randomBetween(config.rotationMin, config.rotationMax);
@@ -3147,25 +3423,26 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
     }
 
     function triggerEffect(options = {}) {
-        if (!effectImages.length) {
+        const pair = pickEffectPair();
+        if (!pair?.image) {
             return;
         }
 
-        playEffectSound();
+        playEffectSound(pair.sound);
 
         const position = options.position || null;
 
         if (isOutputStreaming) {
-            void spawnPublishedEffect(position).catch((error) => {
+            void spawnPublishedEffect(pair.image, position).catch((error) => {
                 console.warn('Could not render effect in stream:', error);
             });
             return;
         }
 
         if (isFullscreen) {
-            spawnEffectOnLayer(elements.fullscreenEffectLayer, position);
+            spawnEffectOnLayer(elements.fullscreenEffectLayer, pair.image, position);
         } else if (elements.effectPreviewToggle.checked || options.fromPreviewTap) {
-            spawnEffectOnLayer(elements.previewEffectLayer, position);
+            spawnEffectOnLayer(elements.previewEffectLayer, pair.image, position);
         }
     }
 
@@ -3407,6 +3684,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
     loadMusicSettings();
     updateMicVolume();
     loadEffectSettings();
+    loadEffectPairPrefs();
     loadSoldImageSettings();
     loadHiddenFolderMedia();
 

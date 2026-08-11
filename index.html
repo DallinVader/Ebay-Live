@@ -235,32 +235,30 @@
 
                 <section class="panel effects-panel">
                     <h2>Action Graphics</h2>
-                    <p class="panel-desc">1960s Batman-style POW! bursts. Upload images and sounds, then hit your hotkey during stream.</p>
+                    <p class="panel-desc">1960s Batman-style POW! bursts. Each graphic is paired with a sound — hit your hotkey during stream.</p>
 
                     <div class="effects-grid">
                         <div class="effects-upload-col">
                             <div class="setting-group">
                                 <label for="effect-image-upload">Upload graphics</label>
                                 <div class="upload-actions">
-                                    <button id="effect-image-clear-btn" type="button" class="btn btn-ghost">Clear</button>
+                                    <button id="effect-image-clear-btn" type="button" class="btn btn-ghost">Clear graphics</button>
                                 </div>
                                 <input type="file" id="effect-image-upload" accept="image/*" multiple>
                             </div>
 
-                            <ul id="effect-image-list" class="effect-image-list">
-                                <li class="effect-empty">Loading default graphics…</li>
-                            </ul>
-
                             <div class="setting-group">
                                 <label for="effect-sound-upload">Upload sound effects</label>
                                 <div class="upload-actions">
-                                    <button id="effect-sound-clear-btn" type="button" class="btn btn-ghost">Clear</button>
+                                    <button id="effect-sound-clear-btn" type="button" class="btn btn-ghost">Clear sounds</button>
                                 </div>
                                 <input type="file" id="effect-sound-upload" accept="audio/*" multiple>
                             </div>
 
-                            <ul id="effect-sound-list" class="effect-sound-list">
-                                <li class="effect-empty">Loading default sounds…</li>
+                            <p class="field-hint">Use the dropdowns on each row to pick that item’s graphic and sound. Choices are saved automatically.</p>
+
+                            <ul id="effect-pair-list" class="effect-pair-list">
+                                <li class="effect-empty">Loading default effects…</li>
                             </ul>
                         </div>
 

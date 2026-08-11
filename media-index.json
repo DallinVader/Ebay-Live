@@ -27,5 +27,55 @@
         "The Man Bat (1).mp3",
         "The Man Bat (2).mp3",
         "The Man Bat #1.mp3"
+    ],
+    "Effects": [
+        {
+            "image": "Crack.png",
+            "sound": "Chair Crash Short.wav"
+        },
+        {
+            "image": "Crash!.png",
+            "sound": "Chair Crash.wav"
+        },
+        {
+            "image": "Kabam!.png",
+            "sound": "Punch 1.wav"
+        },
+        {
+            "image": "Kaboom!.png",
+            "sound": "Punch 2.wav"
+        },
+        {
+            "image": "OOF!.png",
+            "sound": "Punch 3.wav"
+        },
+        {
+            "image": "Pow.png",
+            "sound": "Punch copy.wav"
+        },
+        {
+            "image": "Slappow.png",
+            "sound": "Punch.wav"
+        },
+        {
+            "image": "Sold.png",
+            "sound": "Chair Crash Short.wav"
+        },
+        {
+            "image": "Thwap!.png",
+            "sound": "Chair Crash.wav"
+        },
+        {
+            "image": "Uh Oh.png",
+            "sound": "Punch 1.wav"
+        },
+        {
+            "image": "Whackpow.png",
+            "sound": "Punch 2.wav"
+        },
+        {
+            "image": "Wham.png",
+            "sound": "Punch 3.wav"
+        }
     ]
 }

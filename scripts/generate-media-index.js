@@ -22,12 +22,26 @@ function listFolder(folderName) {
         .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
 
+function pairEffects(images, sounds) {
+    if (!images.length) {
+        return [];
+    }
+
+    return images.map((image, index) => ({
+        image,
+        sound: sounds.length ? sounds[index % sounds.length] : null,
+    }));
+}
+
 function buildMediaIndex() {
     const index = {};
 
     Object.keys(FOLDERS).forEach((folderName) => {
         index[folderName] = listFolder(folderName);
     });
+
+    // Pair each graphic with a sound by sorted list order (sounds cycle if fewer).
+    index.Effects = pairEffects(index.Images, index.Sound);
 
     return index;
 }
@@ -40,11 +54,12 @@ function writeMediaIndex() {
     );
 
     Object.entries(index).forEach(([folder, files]) => {
-        console.log(`${folder}: ${files.length} file(s)`);
+        const count = Array.isArray(files) ? files.length : 0;
+        console.log(`${folder}: ${count} ${folder === 'Effects' ? 'pair(s)' : 'file(s)'}`);
     });
 }
 
-module.exports = { buildMediaIndex, writeMediaIndex, listFolder, FOLDERS };
+module.exports = { buildMediaIndex, writeMediaIndex, listFolder, pairEffects, FOLDERS };
 
 if (require.main === module) {
     writeMediaIndex();
