@@ -1,4 +1,3 @@
-import { AudioMixer } from './stream/audio-mixer.js?v=20260715d';
 import { AdaptiveQualityPolicy } from './stream/adaptive-quality.js?v=20260715d';
 import { PublishSource, detectInsertableVideoSupport } from './stream/publish-source.js?v=20260715d';
 import { WhipSession } from './stream/whip-session.js?v=20260715d';
@@ -50,6 +49,8 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         streamKey: document.getElementById('stream-key'),
         streamStartBtn: document.getElementById('stream-start-btn'),
         streamStopBtn: document.getElementById('stream-stop-btn'),
+        streamMonitorBtn: document.getElementById('stream-monitor-btn'),
+        muteLocalAudioBtn: document.getElementById('mute-local-audio-btn'),
         streamOutputStatus: document.getElementById('stream-output-status'),
         cameraError: document.getElementById('camera-error'),
         liveOverlay: document.getElementById('live-overlay'),
@@ -506,9 +507,9 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
     let micMonitorTrackId = null;
     let streamAudioMixActive = false;
     let streamMixGainNode = null;
-    let streamMicMixGain = null;
-    let streamMicMixSource = null;
-    let streamMixMicTrack = null;
+    let streamMasterCompressor = null;
+    let streamMicSendGain = null;
+    let streamMicHighpass = null;
     let musicMediaSource = null;
     let musicStreamGain = null;
     let musicMonitorGain = null;
@@ -516,9 +517,12 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
     const effectSoundBufferCache = new Map();
     let isOutputStreaming = false;
     let isOutputStarting = false;
+    let streamMonitorEnabled = false;
+    let localAudioMuted = false;
+    let streamMonitorGain = null;
+    let streamMonitorMicGain = null;
     let activePublishSource = null;
     let activeWhipSession = null;
-    let activeAudioMixer = null;
     let publishedPreviewStream = null;
     let syntheticMainTrack = null;
     let activeWhipEndpoint = null;
@@ -635,9 +639,12 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
 
     function getMicAudioConstraints(micId, exact = true) {
         const base = {
+            channelCount: { ideal: 1 },
+            sampleRate: { ideal: 48000 },
             echoCancellation: true,
             noiseSuppression: true,
-            autoGainControl: true,
+            // Manual mic fader sounds cleaner than browser AGC pumping against music.
+            autoGainControl: false,
         };
 
         if (!micId) {
@@ -788,7 +795,8 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
 
     async function ensureStreamAudioContext() {
         if (!audioContext || audioContext.state === 'closed') {
-            audioContext = new AudioContext();
+            // Lock to 48 kHz so mic/music/sfx and Opus share one clock (no re-resample hops).
+            audioContext = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
         }
 
         if (audioContext.state === 'suspended') {
@@ -817,7 +825,10 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         if (musicMediaSource) {
             elements.musicPlayer.volume = 1;
             if (musicMonitorGain) {
-                musicMonitorGain.gain.value = volume;
+                // Mute local playback, or skip the local tap while hearing the program bus (avoids doubling).
+                const hearLocalMusic = !localAudioMuted
+                    && !(streamMonitorEnabled && streamAudioMixActive);
+                musicMonitorGain.gain.value = hearLocalMusic ? volume : 0;
             }
             if (musicStreamGain) {
                 musicStreamGain.gain.value = streamAudioMixActive ? volume : 0;
@@ -825,11 +836,129 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
             return;
         }
 
-        elements.musicPlayer.volume = volume;
+        elements.musicPlayer.volume = localAudioMuted ? 0 : volume;
+    }
+
+    function shouldMonitorEffectsLocally() {
+        if (localAudioMuted) {
+            return false;
+        }
+
+        // While listening to the program bus, effects are already in that mix.
+        return !(streamMonitorEnabled && streamAudioMixActive);
+    }
+
+    function stopStreamMonitorNodes() {
+        if (streamMonitorGain) {
+            if (streamMasterCompressor) {
+                try {
+                    streamMasterCompressor.disconnect(streamMonitorGain);
+                } catch {
+                    // Already disconnected.
+                }
+            }
+            try {
+                streamMonitorGain.disconnect();
+            } catch {
+                // Already disconnected.
+            }
+            streamMonitorGain = null;
+        }
+
+        if (streamMonitorMicGain) {
+            try {
+                streamMonitorMicGain.disconnect();
+            } catch {
+                // Already disconnected.
+            }
+            streamMonitorMicGain = null;
+        }
+    }
+
+    function updateStreamMonitorButton() {
+        if (!elements.streamMonitorBtn) {
+            return;
+        }
+
+        elements.streamMonitorBtn.setAttribute('aria-pressed', streamMonitorEnabled ? 'true' : 'false');
+        elements.streamMonitorBtn.classList.toggle('is-active', streamMonitorEnabled);
+        elements.streamMonitorBtn.textContent = streamMonitorEnabled
+            ? 'Hearing stream audio'
+            : 'Hear stream audio';
+    }
+
+    function updateMuteLocalAudioButton() {
+        if (!elements.muteLocalAudioBtn) {
+            return;
+        }
+
+        elements.muteLocalAudioBtn.setAttribute('aria-pressed', localAudioMuted ? 'true' : 'false');
+        elements.muteLocalAudioBtn.classList.toggle('is-active', localAudioMuted);
+        elements.muteLocalAudioBtn.textContent = localAudioMuted
+            ? 'Local audio muted'
+            : 'Mute local audio';
+    }
+
+    async function applyStreamMonitor() {
+        stopStreamMonitorNodes();
+        updateStreamMonitorButton();
+        updateMuteLocalAudioButton();
+
+        if (!streamMonitorEnabled || localAudioMuted) {
+            updateMusicStreamGains();
+            return;
+        }
+
+        await ensureStreamAudioContext();
+
+        if (audioContext.state === 'suspended') {
+            await audioContext.resume();
+        }
+
+        // Tap the same program bus that goes to the stream (no extra MediaStream hop).
+        if (streamAudioMixActive && streamMasterCompressor) {
+            streamMonitorGain = audioContext.createGain();
+            streamMonitorGain.gain.value = 1;
+            streamMasterCompressor.connect(streamMonitorGain);
+            streamMonitorGain.connect(audioContext.destination);
+            updateMusicStreamGains();
+            return;
+        }
+
+        // Offline preview: hear mic + local music/effects (same ingredients as the stream mix).
+        ensureMusicAudioRouting();
+        if (micGainNode) {
+            streamMonitorMicGain = audioContext.createGain();
+            streamMonitorMicGain.gain.value = 1;
+            micGainNode.connect(streamMonitorMicGain);
+            streamMonitorMicGain.connect(audioContext.destination);
+        }
+
+        updateMusicStreamGains();
+    }
+
+    async function toggleStreamMonitor() {
+        streamMonitorEnabled = !streamMonitorEnabled;
+        if (streamMonitorEnabled && localAudioMuted) {
+            localAudioMuted = false;
+        }
+        await applyStreamMonitor();
+
+        if (streamMonitorEnabled && !streamAudioMixActive && !micGainNode) {
+            updateStreamOutputStatus('Stream monitor on — open a mic or start streaming to hear the full mix.');
+        }
+    }
+
+    async function toggleMuteLocalAudio() {
+        localAudioMuted = !localAudioMuted;
+        await applyStreamMonitor();
+        updateMusicStreamGains();
+        updateMuteLocalAudioButton();
     }
 
     function teardownStreamAudioMix() {
         streamAudioMixActive = false;
+        stopStreamMonitorNodes();
 
         if (musicStreamGain && streamMixGainNode) {
             try {
@@ -839,27 +968,36 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
             }
         }
 
-        if (streamMicMixSource) {
+        if (streamMicSendGain) {
             try {
-                streamMicMixSource.disconnect();
+                if (streamMicHighpass) {
+                    streamMicHighpass.disconnect(streamMicSendGain);
+                } else {
+                    micGainNode?.disconnect(streamMicSendGain);
+                }
             } catch {
                 // Already disconnected.
             }
-            streamMicMixSource = null;
-        }
-
-        if (streamMicMixGain) {
             try {
-                streamMicMixGain.disconnect();
+                streamMicSendGain.disconnect();
             } catch {
                 // Already disconnected.
             }
-            streamMicMixGain = null;
+            streamMicSendGain = null;
         }
 
-        if (streamMixMicTrack) {
-            streamMixMicTrack.stop();
-            streamMixMicTrack = null;
+        if (streamMicHighpass) {
+            try {
+                micGainNode?.disconnect(streamMicHighpass);
+            } catch {
+                // Already disconnected.
+            }
+            try {
+                streamMicHighpass.disconnect();
+            } catch {
+                // Already disconnected.
+            }
+            streamMicHighpass = null;
         }
 
         if (streamSfxGain) {
@@ -880,37 +1018,61 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
             streamMixGainNode = null;
         }
 
+        if (streamMasterCompressor) {
+            try {
+                streamMasterCompressor.disconnect();
+            } catch {
+                // Already disconnected.
+            }
+            streamMasterCompressor = null;
+        }
+
         streamPublishAudioDest?.stream.getTracks().forEach((track) => track.stop());
         streamPublishAudioDest = null;
         updateMusicStreamGains();
     }
 
-    async function setupStreamAudioMix({ includeMic = true } = {}) {
+    async function setupStreamAudioMix() {
         await ensureStreamAudioContext();
         teardownStreamAudioMix();
         ensureMusicAudioRouting();
 
+        const liveMicTrack = getLiveMicrophoneTrack();
+        if (liveMicTrack && !micGainNode) {
+            await setupMicAudio(liveMicTrack);
+        }
+
         streamPublishAudioDest = audioContext.createMediaStreamDestination();
         streamMixGainNode = audioContext.createGain();
         streamMixGainNode.gain.value = 1;
-        streamMixGainNode.connect(streamPublishAudioDest);
+
+        // Soft peak control so stacked mic + music + SFX don't clip harshly.
+        streamMasterCompressor = audioContext.createDynamicsCompressor();
+        streamMasterCompressor.threshold.value = -4;
+        streamMasterCompressor.knee.value = 8;
+        streamMasterCompressor.ratio.value = 8;
+        streamMasterCompressor.attack.value = 0.003;
+        streamMasterCompressor.release.value = 0.18;
+
+        streamMixGainNode.connect(streamMasterCompressor);
+        streamMasterCompressor.connect(streamPublishAudioDest);
 
         streamSfxGain = audioContext.createGain();
         streamSfxGain.gain.value = elements.effectSfxVolume.value / 100;
         streamSfxGain.connect(streamMixGainNode);
 
-        const micTrack = includeMic ? await acquireStreamMicrophoneTrack(true) : null;
-        if (micTrack) {
-            const publishMic = typeof micTrack.clone === 'function' ? micTrack.clone() : micTrack;
-            if (publishMic !== micTrack) {
-                streamMixMicTrack = publishMic;
-            }
+        if (micGainNode) {
+            streamMicHighpass = audioContext.createBiquadFilter();
+            streamMicHighpass.type = 'highpass';
+            streamMicHighpass.frequency.value = 70;
+            streamMicHighpass.Q.value = 0.7;
 
-            streamMicMixSource = audioContext.createMediaStreamSource(new MediaStream([publishMic]));
-            streamMicMixGain = audioContext.createGain();
-            streamMicMixGain.gain.value = elements.micVolume.value / 100;
-            streamMicMixSource.connect(streamMicMixGain);
-            streamMicMixGain.connect(streamMixGainNode);
+            streamMicSendGain = audioContext.createGain();
+            streamMicSendGain.gain.value = 1;
+
+            micGainNode.connect(streamMicHighpass);
+            streamMicHighpass.connect(streamMicSendGain);
+            streamMicSendGain.connect(streamMixGainNode);
         }
 
         musicStreamGain.connect(streamMixGainNode);
@@ -1089,19 +1251,8 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         reconnectAttempt = 0;
         updateStreamOutputStatus('Preparing 720×1280 adaptive WHIP stream…');
 
-        await setupStreamAudioMix({ includeMic: false });
-        activeAudioMixer = new AudioMixer();
-        const micTrack = getLiveMicrophoneTrack();
-        if (micTrack) {
-            activeAudioMixer.setMic(
-                new MediaStream([micTrack]),
-                Number(elements.micVolume.value) / 100,
-            );
-        }
-        if (streamPublishAudioDest?.stream.getAudioTracks().length) {
-            activeAudioMixer.setInput('program', streamPublishAudioDest.stream, 1);
-        }
-        await activeAudioMixer.resume();
+        await setupStreamAudioMix();
+        const mixedAudioTrack = streamPublishAudioDest?.stream.getAudioTracks()[0] || null;
 
         const mainTrack = mediaStream?.getVideoTracks()[0] || createSyntheticVideoTrack();
         const overlayTrack = elements.overlayEnabledToggle.checked
@@ -1110,7 +1261,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         activePublishSource = new PublishSource({
             main: mainTrack,
             overlay: overlayTrack,
-            audioTrack: activeAudioMixer.track,
+            audioTrack: mixedAudioTrack,
             initialState: getWorkerCompositionState(Boolean(overlayTrack)),
             onError: (error) => {
                 console.error('Compositor worker error:', error);
@@ -1129,6 +1280,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         await activeWhipSession.start();
         setOutputStreamingState(true);
         updateStreamOutputStatus('Streaming to eBay Live (adaptive WHIP)', 'is-live');
+        await applyStreamMonitor();
     }
 
     function saveStreamOutputSettings() {
@@ -1216,11 +1368,9 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         syntheticMainTrack?.stop();
         syntheticMainTrack = null;
 
-        const mixer = activeAudioMixer;
-        activeAudioMixer = null;
-        await mixer?.stop();
-        disconnectPublishAudio();
         teardownStreamAudioMix();
+        disconnectPublishAudio();
+        void applyStreamMonitor();
 
         const overlayVisible = Boolean(
             overlayMediaStream && elements.overlayEnabledToggle.checked,
@@ -1655,6 +1805,10 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         micLevelData = null;
         elements.micLevel.style.width = '0%';
 
+        if (streamMonitorEnabled) {
+            void applyStreamMonitor();
+        }
+
         // Keep shared AudioContext alive for music / stream mix.
         if (!streamAudioMixActive && !musicMediaSource && audioContext && audioContext.state !== 'closed') {
             audioContext.close().catch(() => {});
@@ -1718,6 +1872,9 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         updateMicVolume();
         elements.micStatus.textContent = 'Active';
         levelAnimationId = requestAnimationFrame(updateMicLevel);
+        if (streamMonitorEnabled) {
+            void applyStreamMonitor();
+        }
     }
 
     function updateMicVolume() {
@@ -1725,15 +1882,16 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         elements.micVolumeValue.textContent = `${elements.micVolume.value}%`;
 
         if (micGainNode) {
-            micGainNode.gain.value = volume;
-        }
-
-        if (streamMicMixGain) {
-            streamMicMixGain.gain.value = volume;
-        }
-
-        if (activeAudioMixer?.getGain('mic') !== undefined) {
-            activeAudioMixer.setGain('mic', volume, 0.03);
+            // Short ramp avoids zipper noise when dragging the fader.
+            if (audioContext && audioContext.state !== 'closed') {
+                const now = audioContext.currentTime;
+                const current = micGainNode.gain.value;
+                micGainNode.gain.cancelScheduledValues(now);
+                micGainNode.gain.setValueAtTime(current, now);
+                micGainNode.gain.linearRampToValueAtTime(volume, now + 0.03);
+            } else {
+                micGainNode.gain.value = volume;
+            }
         }
     }
 
@@ -3033,20 +3191,32 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
             source.connect(gain);
             gain.connect(streamSfxGain);
 
-            const monitorGain = audioContext.createGain();
-            monitorGain.gain.value = volume;
-            gain.connect(monitorGain);
-            monitorGain.connect(audioContext.destination);
+            if (shouldMonitorEffectsLocally()) {
+                const monitorGain = audioContext.createGain();
+                monitorGain.gain.value = volume;
+                gain.connect(monitorGain);
+                monitorGain.connect(audioContext.destination);
 
-            source.onended = () => {
-                try {
-                    source.disconnect();
-                    gain.disconnect();
-                    monitorGain.disconnect();
-                } catch {
-                    // Already disconnected.
-                }
-            };
+                source.onended = () => {
+                    try {
+                        source.disconnect();
+                        gain.disconnect();
+                        monitorGain.disconnect();
+                    } catch {
+                        // Already disconnected.
+                    }
+                };
+            } else {
+                source.onended = () => {
+                    try {
+                        source.disconnect();
+                        gain.disconnect();
+                    } catch {
+                        // Already disconnected.
+                    }
+                };
+            }
+
             source.start(0);
             return true;
         } catch (error) {
@@ -3078,11 +3248,16 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
                 try {
                     await ensureStreamAudioContext();
                     const source = audioContext.createMediaElementSource(player);
-                    const monitorGain = audioContext.createGain();
-                    monitorGain.gain.value = elements.effectSfxVolume.value / 100;
                     source.connect(streamSfxGain);
-                    source.connect(monitorGain);
-                    monitorGain.connect(audioContext.destination);
+
+                    let monitorGain = null;
+                    if (shouldMonitorEffectsLocally()) {
+                        monitorGain = audioContext.createGain();
+                        monitorGain.gain.value = elements.effectSfxVolume.value / 100;
+                        source.connect(monitorGain);
+                        monitorGain.connect(audioContext.destination);
+                    }
+
                     player.addEventListener('ended', () => {
                         cleanup(source, monitorGain);
                         resolve(true);
@@ -3158,6 +3333,10 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
 
         if (streamAudioMixActive && streamSfxGain) {
             void playEffectSoundThroughMix(url);
+            return;
+        }
+
+        if (localAudioMuted) {
             return;
         }
 
@@ -3603,6 +3782,12 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
     elements.streamKey.addEventListener('change', saveStreamOutputSettings);
     elements.streamStartBtn.addEventListener('click', startOutputStream);
     elements.streamStopBtn.addEventListener('click', stopOutputStream);
+    elements.streamMonitorBtn.addEventListener('click', () => {
+        void toggleStreamMonitor();
+    });
+    elements.muteLocalAudioBtn.addEventListener('click', () => {
+        void toggleMuteLocalAudio();
+    });
     initOverlayDrag();
     initStreamTap();
     elements.fullscreenBtn.addEventListener('click', enterFullscreen);
@@ -3694,6 +3879,8 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
     })();
 
     initMediaRefresh();
+    updateStreamMonitorButton();
+    updateMuteLocalAudioButton();
 
     if (navigator.mediaDevices?.getUserMedia) {
         void loadDevices(true);
