@@ -54,11 +54,12 @@ function sendJson(res, status, data) {
 }
 
 function pairEffects(images, sounds) {
-    if (!images.length) {
+    const actionImages = images.filter((image) => image.toLowerCase() !== 'sold.png');
+    if (!actionImages.length) {
         return [];
     }
 
-    return images.map((image, index) => ({
+    return actionImages.map((image, index) => ({
         image,
         sound: sounds.length ? sounds[index % sounds.length] : null,
     }));

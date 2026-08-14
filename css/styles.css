@@ -10,6 +10,7 @@
     --bg-base: #0d1117;
     --bg-surface: #161b22;
     --bg-elevated: #1c2128;
+    --bg: #12171e;
     --border: #30363d;
     --text-primary: #e6edf3;
     --text-secondary: #8b949e;
@@ -379,6 +380,20 @@ input[type="file"] {
 select,
 input[type="file"] {
     cursor: pointer;
+}
+
+select:disabled,
+input:disabled,
+textarea:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    color: var(--text-secondary);
+}
+
+.live-lock-hint {
+    margin-top: 0.35rem;
+    margin-bottom: 0.75rem;
+    color: var(--accent);
 }
 
 select:focus,

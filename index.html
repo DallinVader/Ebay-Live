@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>eBay Live — Stream Console</title>
-    <link rel="stylesheet" href="css/styles.css?v=20260715c">
+    <link rel="stylesheet" href="css/styles.css?v=20260814b">
 </head>
 <body>
     <div id="app">
@@ -17,7 +17,7 @@
                 </div>
                 <div class="header-actions">
                     <button id="asset-reset-btn" type="button" class="btn btn-ghost" title="Restore default Images, Sound, Music, and SOLD graphic">Asset Reset</button>
-                    <span id="stream-status" class="status-badge status-idle">Ready</span>
+                    <span id="stream-status" class="status-badge status-idle" role="status" aria-live="polite">Ready</span>
                     <button id="fullscreen-btn" type="button" class="btn btn-primary">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                             <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
@@ -71,6 +71,8 @@
                         </select>
                         <p class="field-hint">Automatically steps down when bandwidth or CPU is limited.</p>
                     </div>
+
+                    <p id="live-lock-hint" class="field-hint live-lock-hint hidden">Streaming — camera and quality settings are locked. Microphone can still be changed.</p>
 
                     <div class="setting-subsection">
                         <h3>Overlay camera</h3>
@@ -189,7 +191,7 @@
 
                         <p class="field-hint">Hear stream audio plays the full mix locally. Mute local audio keeps mic/music/effects on the stream but silent on this PC — useful with speakers.</p>
 
-                        <p id="stream-output-status" class="stream-output-status">Ready to stream</p>
+                        <p id="stream-output-status" class="stream-output-status" role="status" aria-live="polite">Ready to stream</p>
                     </div>
 
                     <div class="setting-row">
@@ -373,7 +375,7 @@
             </main>
 
             <footer class="console-footer">
-                <p>Press <kbd>Esc</kbd> or <kbd>F</kbd> while fullscreen to return to this console. Press <kbd>Space</kbd> or tap the screen to burst a graphic. Press <kbd>S</kbd> for the SOLD overlay.</p>
+                <p id="footer-hotkey-hint">Press <kbd>Esc</kbd> or <kbd>F</kbd> while fullscreen to return to this console. Press <kbd>Space</kbd> or tap the screen to burst a graphic. Press <kbd>S</kbd> for the SOLD overlay.</p>
             </footer>
         </div>
 
@@ -397,6 +399,6 @@
 
     <audio id="music-player"></audio>
 
-    <script type="module" src="js/app.js?v=20260811b"></script>
+    <script type="module" src="js/app.js?v=20260814b"></script>
 </body>
 </html>

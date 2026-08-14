@@ -468,7 +468,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
             console.warn('Could not clear asset cache:', error);
         }
 
-        await refreshAllMediaFromFolders();
+        await refreshAllMediaFromFolders({ force: true });
         updateMusicControls();
     }
 
@@ -527,6 +527,10 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
     let syntheticMainTrack = null;
     let activeWhipEndpoint = null;
     let reconnectAttempt = 0;
+    let whipReconnectInFlight = false;
+    let lastMediaFingerprint = '';
+    const RESERVED_EFFECT_IMAGE_NAMES = new Set(['sold.png']);
+    const RESERVED_HOTKEY_CODES = new Set(['Escape', 'KeyF', 'Tab', 'MetaLeft', 'MetaRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight']);
 
     function setStatus(live) {
         elements.streamStatus.textContent = live ? 'Live' : 'Ready';
@@ -542,6 +546,41 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
         }
     }
 
+    function updateLiveLockHints(live) {
+        const hint = live ? 'Stop streaming to change this setting.' : '';
+        [
+            elements.cameraSelect,
+            elements.mainCameraResolution,
+            elements.cameraResolution,
+            elements.overlayEnabledToggle,
+            elements.overlayCameraSelect,
+            elements.overlayCameraResolution,
+        ].forEach((el) => {
+            if (!el) {
+                return;
+            }
+            if (hint && el.disabled) {
+                el.title = hint;
+            } else if (el.title === 'Stop streaming to change this setting.') {
+                el.title = '';
+            }
+        });
+
+        const lockHint = document.getElementById('live-lock-hint');
+        if (lockHint) {
+            lockHint.classList.toggle('hidden', !live);
+        }
+    }
+
+    function updateHotkeyFooter() {
+        const footerKeys = document.getElementById('footer-hotkey-hint');
+        if (!footerKeys) {
+            return;
+        }
+
+        footerKeys.innerHTML = `Press <kbd>Esc</kbd> or <kbd>F</kbd> while fullscreen to return to this console. Press <kbd>${escapeHtml(formatHotkeyLabel(effectHotkey))}</kbd> or tap the screen to burst a graphic. Press <kbd>${escapeHtml(formatHotkeyLabel(soldHotkey))}</kbd> for the SOLD overlay.`;
+    }
+
     function setOutputStreamingState(live) {
         isOutputStreaming = live;
         elements.streamStartBtn.disabled = live;
@@ -553,6 +592,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
         elements.cameraResolution.disabled = live;
         setOverlayControlsEnabled(elements.overlayEnabledToggle.checked);
         setStatus(live);
+        updateLiveLockHints(live);
     }
 
     function setOutputStartingState(starting) {
@@ -637,13 +677,69 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
         return micDevices[0]?.deviceId || null;
     }
 
+    function isVirtualDefaultDevice(device) {
+        const id = device?.deviceId || '';
+        if (id === 'default' || id === 'communications') {
+            return true;
+        }
+
+        const label = (device?.label || '').trim().toLowerCase();
+        return label.startsWith('default -')
+            || label.startsWith('default –')
+            || label.startsWith('default —')
+            || label.startsWith('communications -')
+            || label.startsWith('communications –')
+            || label.startsWith('communications —');
+    }
+
+    function dedupeInputDevices(devices) {
+        const groups = new Map();
+
+        devices.forEach((device) => {
+            if (!device?.deviceId) {
+                return;
+            }
+
+            const key = device.groupId || device.deviceId;
+            const list = groups.get(key) || [];
+            list.push(device);
+            groups.set(key, list);
+        });
+
+        const deduped = [];
+
+        groups.forEach((list) => {
+            const physical = list.filter((device) => !isVirtualDefaultDevice(device));
+            const preferredList = physical.length ? physical : list;
+            const seenIds = new Set();
+
+            preferredList.forEach((device) => {
+                if (seenIds.has(device.deviceId)) {
+                    return;
+                }
+
+                seenIds.add(device.deviceId);
+                deduped.push(device);
+            });
+        });
+
+        return deduped;
+    }
+
+    function formatDeviceLabel(device, fallback) {
+        const raw = (device?.label || '').trim() || fallback;
+        return raw
+            .replace(/^Default\s*[-–—]\s*/i, '')
+            .replace(/^Communications\s*[-–—]\s*/i, '');
+    }
+
     function getMicAudioConstraints(micId, exact = true) {
+        // Keep processing light and avoid forcing sampleRate — Windows + Chrome often
+        // garble capture when 48 kHz is forced on a 44.1 kHz endpoint.
         const base = {
             channelCount: { ideal: 1 },
-            sampleRate: { ideal: 48000 },
             echoCancellation: true,
-            noiseSuppression: true,
-            // Manual mic fader sounds cleaner than browser AGC pumping against music.
+            noiseSuppression: false,
             autoGainControl: false,
         };
 
@@ -795,8 +891,8 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
 
     async function ensureStreamAudioContext() {
         if (!audioContext || audioContext.state === 'closed') {
-            // Lock to 48 kHz so mic/music/sfx and Opus share one clock (no re-resample hops).
-            audioContext = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+            // Use the device default rate — forcing 48 kHz garbles some Windows mics.
+            audioContext = new AudioContext({ latencyHint: 'interactive' });
         }
 
         if (audioContext.state === 'suspended') {
@@ -1225,30 +1321,43 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
             return;
         }
 
-        reconnectAttempt += 1;
-        if (reconnectAttempt > 3) {
-            await stopOutputStream(false);
-            updateStreamOutputStatus('WHIP could not recover after 3 attempts.', 'is-error');
+        if (whipReconnectInFlight) {
             return;
         }
 
-        const previousSession = activeWhipSession;
-        activeWhipSession = null;
-        await previousSession?.stop();
-        const retryDelayMs = Math.min(5_000, reconnectAttempt * 2_000);
-        await new Promise((resolve) => window.setTimeout(resolve, retryDelayMs));
-
-        if (!isOutputStreaming || !activePublishSource) {
-            return;
-        }
+        whipReconnectInFlight = true;
 
         try {
-            activeWhipSession = createWhipSession(activeWhipEndpoint);
-            await activeWhipSession.start();
-            reconnectAttempt = 0;
-        } catch (error) {
-            console.warn('WHIP reconnect failed:', error);
-            void reconnectWhipSession();
+            reconnectAttempt += 1;
+            if (reconnectAttempt > 3) {
+                await stopOutputStream(false);
+                updateStreamOutputStatus('WHIP could not recover after 3 attempts.', 'is-error');
+                return;
+            }
+
+            const previousSession = activeWhipSession;
+            activeWhipSession = null;
+            await previousSession?.stop();
+            const retryDelayMs = Math.min(5_000, reconnectAttempt * 2_000);
+            await new Promise((resolve) => window.setTimeout(resolve, retryDelayMs));
+
+            if (!isOutputStreaming || !activePublishSource) {
+                return;
+            }
+
+            try {
+                activeWhipSession = createWhipSession(activeWhipEndpoint);
+                await activeWhipSession.start();
+                reconnectAttempt = 0;
+                updateStreamOutputStatus('Streaming to eBay Live (adaptive WHIP)', 'is-live');
+            } catch (error) {
+                console.warn('WHIP reconnect failed:', error);
+                whipReconnectInFlight = false;
+                void reconnectWhipSession();
+                return;
+            }
+        } finally {
+            whipReconnectInFlight = false;
         }
     }
 
@@ -1666,8 +1775,8 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
         elements.overlayCameraSelect.innerHTML = [
             '<option value="">None</option>',
             ...availableCameras.map((device, index) => {
-                const label = device.label || `Camera ${index + 1}`;
-                return `<option value="${device.deviceId}">${label}</option>`;
+                const label = escapeHtml(formatDeviceLabel(device, `Camera ${index + 1}`));
+                return `<option value="${escapeHtml(device.deviceId)}">${label}</option>`;
             }),
         ].join('');
 
@@ -1877,6 +1986,14 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
         micGainNode.connect(micAnalyser);
         micGainNode.connect(micMonitorDest);
 
+        audioTrack.addEventListener('ended', () => {
+            elements.micStatus.textContent = 'Mic disconnected';
+            disconnectMicFromStreamMix();
+            if (isOutputStreaming || isOutputStarting) {
+                updateStreamOutputStatus('Microphone disconnected — select another mic to restore audio.', 'is-error');
+            }
+        }, { once: true });
+
         updateMicVolume();
         elements.micStatus.textContent = 'Active';
         levelAnimationId = requestAnimationFrame(updateMicLevel);
@@ -2064,13 +2181,16 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
         elements.cameraSelect.innerHTML = [
             '<option value="">None</option>',
             ...cameraDevices.map((device, index) => {
-                const label = device.label || `Camera ${index + 1}`;
-                return `<option value="${device.deviceId}">${label}</option>`;
+                const label = escapeHtml(formatDeviceLabel(device, `Camera ${index + 1}`));
+                return `<option value="${escapeHtml(device.deviceId)}">${label}</option>`;
             }),
         ].join('');
 
         elements.micSelect.innerHTML = micDevices.length
-            ? micDevices.map((d, i) => `<option value="${d.deviceId}">${d.label || `Microphone ${i + 1}`}</option>`).join('')
+            ? micDevices.map((device, index) => {
+                const label = escapeHtml(formatDeviceLabel(device, `Microphone ${index + 1}`));
+                return `<option value="${escapeHtml(device.deviceId)}">${label}</option>`;
+            }).join('')
             : '<option value="">No microphones found</option>';
 
         if (selectedCamera && cameraDevices.some((device) => device.deviceId === selectedCamera)) {
@@ -2118,8 +2238,8 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
         }
 
         const devices = await navigator.mediaDevices.enumerateDevices();
-        cameraDevices = devices.filter((d) => d.kind === 'videoinput');
-        micDevices = devices.filter((d) => d.kind === 'audioinput');
+        cameraDevices = dedupeInputDevices(devices.filter((d) => d.kind === 'videoinput'));
+        micDevices = dedupeInputDevices(devices.filter((d) => d.kind === 'audioinput'));
 
         populateDeviceSelects();
 
@@ -2791,17 +2911,13 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
             fetchMediaIndexFromJson(),
         ]);
 
+        // Prefer a single live source so deleted local files are not resurrected from GitHub.
+        const preferred = [devServer, localApi, jsonIndex, githubIndex]
+            .find((index) => index && MEDIA_FOLDERS.every((folder) => Array.isArray(index[folder])));
+
         const index = {};
         MEDIA_FOLDERS.forEach((folder) => {
-            const liveSources = [
-                devServer?.[folder],
-                localApi?.[folder],
-                githubIndex?.[folder],
-            ].filter((list) => Array.isArray(list));
-
-            index[folder] = liveSources.length
-                ? mergeFolderFiles(...liveSources)
-                : mergeFolderFiles(jsonIndex?.[folder] ?? []);
+            index[folder] = mergeFolderFiles(preferred?.[folder] ?? []);
         });
 
         return index;
@@ -2812,12 +2928,41 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
         saveHiddenFolderMedia();
     }
 
-    function filterVisibleFolderFiles(folderName, files) {
-        const hidden = hiddenFolderMedia[folderName];
-        return files.filter((name) => !hidden.has(name));
+    function isReservedEffectImage(fileName) {
+        return RESERVED_EFFECT_IMAGE_NAMES.has(String(fileName || '').toLowerCase());
     }
 
-    function applyFolderMedia(index) {
+    function filterVisibleFolderFiles(folderName, files) {
+        const hidden = hiddenFolderMedia[folderName];
+        return files.filter((name) => {
+            if (hidden.has(name)) {
+                return false;
+            }
+            if (folderName === 'Images' && isReservedEffectImage(name)) {
+                return false;
+            }
+            return true;
+        });
+    }
+
+    function mediaFingerprint(index) {
+        return MEDIA_FOLDERS.map((folder) => `${folder}:${(index[folder] || []).join('|')}`).join(';;');
+    }
+
+    function applyFolderMedia(index, { force = false } = {}) {
+        const fingerprint = mediaFingerprint(index);
+        const pairSelectFocused = Boolean(document.activeElement?.closest?.('#effect-pair-list'));
+
+        if (!force && fingerprint === lastMediaFingerprint && !pairSelectFocused) {
+            return;
+        }
+
+        if (!force && pairSelectFocused) {
+            return;
+        }
+
+        lastMediaFingerprint = fingerprint;
+
         const folderImages = mapFolderFiles('Images', filterVisibleFolderFiles('Images', index.Images));
         const uploadedImages = effectImages.filter((image) => !image.isDefault);
         effectImages = [...folderImages, ...uploadedImages];
@@ -2834,24 +2979,26 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
         renderEffectPairList();
     }
 
-    async function refreshAllMediaFromFolders() {
+    async function refreshAllMediaFromFolders(options = {}) {
         const index = await fetchMediaIndex();
-        applyFolderMedia(index);
+        applyFolderMedia(index, options);
     }
 
     function initMediaRefresh() {
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden) {
-                refreshAllMediaFromFolders();
+                void refreshAllMediaFromFolders();
                 void ensureStreamAudioContext();
             }
         });
 
         window.addEventListener('focus', () => {
-            refreshAllMediaFromFolders();
+            void refreshAllMediaFromFolders();
             void ensureStreamAudioContext();
         });
-        setInterval(refreshAllMediaFromFolders, MEDIA_REFRESH_MS);
+        setInterval(() => {
+            void refreshAllMediaFromFolders();
+        }, MEDIA_REFRESH_MS);
     }
 
     function mapFolderFiles(folderName, files) {
@@ -3666,8 +3813,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
     }
 
     function triggerSoldOverlay() {
-        playEffectSound();
-
+        // SOLD is its own graphic — do not pull a random POW sound effect.
         if (isOutputStreaming) {
             void spawnPublishedSold().catch((error) => {
                 console.warn('Could not render SOLD in stream:', error);
@@ -3778,25 +3924,53 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
     }
 
     function finishHotkeyCapture(code) {
+        const cancel = code === 'Escape';
+        const blocked = !cancel && RESERVED_HOTKEY_CODES.has(code);
+
         if (hotkeyCaptureTarget === 'sold') {
-            if (code !== 'Escape') {
+            if (!cancel && !blocked && code !== effectHotkey) {
                 soldHotkey = code;
                 elements.soldHotkeyDisplay.textContent = formatHotkeyLabel(soldHotkey);
                 saveEffectSettings();
+                updateHotkeyFooter();
             } else {
                 elements.soldHotkeyDisplay.textContent = formatHotkeyLabel(soldHotkey);
+                if (blocked || code === effectHotkey) {
+                    elements.soldHotkeyCaptureHint.textContent = code === effectHotkey
+                        ? 'That key is already used for action graphics.'
+                        : 'That key is reserved. Try another.';
+                    elements.soldHotkeyCaptureHint.classList.remove('hidden');
+                    window.setTimeout(() => {
+                        elements.soldHotkeyCaptureHint.classList.add('hidden');
+                        elements.soldHotkeyCaptureHint.textContent = 'Press any key…';
+                    }, 1800);
+                }
             }
 
             elements.soldHotkeySetBtn.classList.remove('capturing');
-            elements.soldHotkeyCaptureHint.classList.add('hidden');
-        } else if (code === 'Escape') {
+            if (!blocked && code !== effectHotkey) {
+                elements.soldHotkeyCaptureHint.classList.add('hidden');
+            }
+        } else if (cancel) {
             elements.hotkeyDisplay.textContent = formatHotkeyLabel(effectHotkey);
             elements.hotkeySetBtn.classList.remove('capturing');
             elements.hotkeyCaptureHint.classList.add('hidden');
+        } else if (blocked || code === soldHotkey) {
+            elements.hotkeyDisplay.textContent = formatHotkeyLabel(effectHotkey);
+            elements.hotkeySetBtn.classList.remove('capturing');
+            elements.hotkeyCaptureHint.textContent = code === soldHotkey
+                ? 'That key is already used for SOLD.'
+                : 'That key is reserved (F / Esc / modifiers). Try another.';
+            elements.hotkeyCaptureHint.classList.remove('hidden');
+            window.setTimeout(() => {
+                elements.hotkeyCaptureHint.classList.add('hidden');
+                elements.hotkeyCaptureHint.textContent = 'Press any key…';
+            }, 1800);
         } else {
             effectHotkey = code;
             elements.hotkeyDisplay.textContent = formatHotkeyLabel(effectHotkey);
             saveEffectSettings();
+            updateHotkeyFooter();
             elements.hotkeySetBtn.classList.remove('capturing');
             elements.hotkeyCaptureHint.classList.add('hidden');
         }
@@ -3806,8 +3980,17 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
     }
 
     function isTypingTarget(target) {
-        return target instanceof HTMLElement
-            && target.matches('input, select, textarea, button');
+        if (!(target instanceof HTMLElement)) {
+            return false;
+        }
+
+        // Buttons keep focus after click — do not treat them as typing targets
+        // or Space/S/F hotkeys die until you click the page background.
+        if (target.matches('button, [type="button"], [type="submit"], [type="reset"], [type="checkbox"], [type="radio"], [type="range"], [type="file"]')) {
+            return false;
+        }
+
+        return target.matches('input, select, textarea') || target.isContentEditable;
     }
 
     function handleGlobalKeydown(event) {
@@ -3823,23 +4006,30 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
             return;
         }
 
-        if (event.code === 'KeyF' && !event.repeat && !isTypingTarget(event.target)) {
-            event.preventDefault();
-            if (isFullscreen) {
-                exitFullscreen();
-            } else {
-                enterFullscreen();
-            }
+        if (isTypingTarget(event.target)) {
             return;
         }
 
-        if (event.code === effectHotkey && !event.repeat && !isTypingTarget(event.target)) {
+        if (event.code === 'KeyF' && !event.repeat) {
+            // Fullscreen wins only when F is not remapped to an effect/SOLD hotkey.
+            if (effectHotkey !== 'KeyF' && soldHotkey !== 'KeyF') {
+                event.preventDefault();
+                if (isFullscreen) {
+                    exitFullscreen();
+                } else {
+                    enterFullscreen();
+                }
+                return;
+            }
+        }
+
+        if (event.code === effectHotkey && !event.repeat) {
             event.preventDefault();
             triggerEffect();
             return;
         }
 
-        if (event.code === soldHotkey && !event.repeat && !isTypingTarget(event.target)) {
+        if (event.code === soldHotkey && !event.repeat) {
             event.preventDefault();
             triggerSoldOverlay();
         }
@@ -3861,12 +4051,20 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
     elements.overlayMirrorToggle.addEventListener('change', updateOverlayLayoutSettings);
     elements.streamUrl.addEventListener('change', saveStreamOutputSettings);
     elements.streamKey.addEventListener('change', saveStreamOutputSettings);
-    elements.streamStartBtn.addEventListener('click', startOutputStream);
-    elements.streamStopBtn.addEventListener('click', stopOutputStream);
+    elements.streamStartBtn.addEventListener('click', () => {
+        elements.streamStartBtn.blur();
+        void startOutputStream();
+    });
+    elements.streamStopBtn.addEventListener('click', () => {
+        elements.streamStopBtn.blur();
+        void stopOutputStream();
+    });
     elements.streamMonitorBtn.addEventListener('click', () => {
+        elements.streamMonitorBtn.blur();
         void toggleStreamMonitor();
     });
     elements.muteLocalAudioBtn.addEventListener('click', () => {
+        elements.muteLocalAudioBtn.blur();
         void toggleMuteLocalAudio();
     });
     initOverlayDrag();
@@ -3914,8 +4112,14 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
     elements.effectSoundClearBtn.addEventListener('click', clearEffectSounds);
     elements.hotkeySetBtn.addEventListener('click', () => startHotkeyCapture('effect'));
     elements.soldHotkeySetBtn.addEventListener('click', () => startHotkeyCapture('sold'));
-    elements.effectTestBtn.addEventListener('click', triggerEffect);
-    elements.soldTestBtn.addEventListener('click', triggerSoldOverlay);
+    elements.effectTestBtn.addEventListener('click', () => {
+        elements.effectTestBtn.blur();
+        triggerEffect();
+    });
+    elements.soldTestBtn.addEventListener('click', () => {
+        elements.soldTestBtn.blur();
+        triggerSoldOverlay();
+    });
     elements.soldImageUpload.addEventListener('change', handleSoldImageUpload);
     elements.soldImageResetBtn.addEventListener('click', resetSoldImage);
 
@@ -3950,18 +4154,20 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
     loadMusicSettings();
     updateMicVolume();
     loadEffectSettings();
+    updateHotkeyFooter();
     loadEffectPairPrefs();
     loadSoldImageSettings();
     loadHiddenFolderMedia();
 
     void (async () => {
         await restoreUploadedAssetsFromCache();
-        await refreshAllMediaFromFolders();
+        await refreshAllMediaFromFolders({ force: true });
     })();
 
     initMediaRefresh();
     updateStreamMonitorButton();
     updateMuteLocalAudioButton();
+    updateLiveLockHints(false);
 
     if (navigator.mediaDevices?.getUserMedia) {
         void loadDevices(true);

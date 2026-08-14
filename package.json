@@ -3,6 +3,8 @@
     "private": true,
     "description": "Browser-based eBay Live stream console",
     "scripts": {
+        "start": "node dev-server.js",
+        "media-index": "node scripts/generate-media-index.js",
         "test": "node --test tests/*.test.js",
         "check": "node --check js/app.js"
     }

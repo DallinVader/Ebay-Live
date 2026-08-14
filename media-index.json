@@ -58,24 +58,20 @@
             "sound": "Punch.wav"
         },
         {
-            "image": "Sold.png",
+            "image": "Thwap!.png",
             "sound": "Chair Crash Short.wav"
         },
         {
-            "image": "Thwap!.png",
+            "image": "Uh Oh.png",
             "sound": "Chair Crash.wav"
         },
         {
-            "image": "Uh Oh.png",
+            "image": "Whackpow.png",
             "sound": "Punch 1.wav"
         },
         {
-            "image": "Whackpow.png",
-            "sound": "Punch 2.wav"
-        },
-        {
             "image": "Wham.png",
-            "sound": "Punch 3.wav"
+            "sound": "Punch 2.wav"
         }
     ]
 }
