@@ -510,6 +510,13 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
     let streamMasterCompressor = null;
     let streamMicSendGain = null;
     let streamMicHighpass = null;
+    let streamMicPresence = null;
+    let streamMicGateGain = null;
+    const MIC_GATE_OPEN_RMS = 0.028;
+    const MIC_GATE_CLOSE_RMS = 0.016;
+    const MIC_GATE_OPEN_GAIN = 1;
+    const MIC_GATE_CLOSED_GAIN = 0.12;
+    let micGateIsOpen = true;
     let musicMediaSource = null;
     let musicStreamGain = null;
     let musicMonitorGain = null;
@@ -733,15 +740,19 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
             .replace(/^Communications\s*[-–—]\s*/i, '');
     }
 
-    function getMicAudioConstraints(micId, exact = true) {
-        // Keep processing light and avoid forcing sampleRate — Windows + Chrome often
-        // garble capture when 48 kHz is forced on a 44.1 kHz endpoint.
+    function getMicAudioConstraints(micId, exact = true, options = {}) {
+        // Match Sound Recorder–style capture: suppress room hiss, stabilize level,
+        // but never force sampleRate (that garbles many Windows endpoints).
         const base = {
             channelCount: { ideal: 1 },
             echoCancellation: true,
-            noiseSuppression: false,
-            autoGainControl: false,
+            noiseSuppression: true,
+            autoGainControl: true,
         };
+
+        if (options.voiceIsolation) {
+            base.voiceIsolation = true;
+        }
 
         if (!micId) {
             return base;
@@ -766,6 +777,18 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
         }
     }
 
+    async function openMicrophoneWithConstraints(micId, exact, options = {}) {
+        const micStream = await navigator.mediaDevices.getUserMedia({
+            audio: getMicAudioConstraints(micId, exact, options),
+            video: false,
+        });
+        const track = micStream.getAudioTracks()[0] || null;
+        if (track) {
+            track.enabled = true;
+        }
+        return track;
+    }
+
     async function openSelectedMicrophone(preferredMicId = null) {
         const micId = preferredMicId || getMicDeviceId();
 
@@ -777,53 +800,38 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
             return null;
         }
 
-        try {
-            const micStream = await navigator.mediaDevices.getUserMedia({
-                audio: getMicAudioConstraints(micId, true),
-                video: false,
-            });
-            const track = micStream.getAudioTracks()[0] || null;
+        const attempts = [
+            { exact: true, voiceIsolation: true },
+            { exact: true, voiceIsolation: false },
+            { exact: false, voiceIsolation: false },
+        ];
 
-            if (!track) {
-                return null;
-            }
+        let lastError = null;
 
-            track.enabled = true;
-
-            if (!trackMatchesMicId(track, micId)) {
-                console.warn('Microphone track deviceId did not match selection; retrying with ideal constraint.');
-                track.stop();
-                const fallbackStream = await navigator.mediaDevices.getUserMedia({
-                    audio: getMicAudioConstraints(micId, false),
-                    video: false,
-                });
-                const fallbackTrack = fallbackStream.getAudioTracks()[0] || null;
-                if (fallbackTrack) {
-                    fallbackTrack.enabled = true;
-                }
-                return fallbackTrack;
-            }
-
-            return track;
-        } catch (exactError) {
-            console.warn('Exact microphone open failed, retrying with ideal:', exactError);
-
+        for (const attempt of attempts) {
             try {
-                const micStream = await navigator.mediaDevices.getUserMedia({
-                    audio: getMicAudioConstraints(micId, false),
-                    video: false,
+                const track = await openMicrophoneWithConstraints(micId, attempt.exact, {
+                    voiceIsolation: attempt.voiceIsolation,
                 });
-                const track = micStream.getAudioTracks()[0] || null;
-                if (track) {
-                    track.enabled = true;
+
+                if (!track) {
+                    continue;
                 }
+
+                if (attempt.exact && !trackMatchesMicId(track, micId)) {
+                    track.stop();
+                    continue;
+                }
+
                 return track;
             } catch (error) {
-                console.error('Microphone open failed:', error);
-                elements.micStatus.textContent = 'Mic denied';
-                return null;
+                lastError = error;
             }
         }
+
+        console.error('Microphone open failed:', lastError);
+        elements.micStatus.textContent = 'Mic denied';
+        return null;
     }
 
     function getLiveMicrophoneTrack() {
@@ -1055,20 +1063,29 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
     function disconnectMicFromStreamMix() {
         if (streamMicSendGain) {
             try {
-                if (streamMicHighpass) {
-                    streamMicHighpass.disconnect(streamMicSendGain);
-                } else {
-                    micGainNode?.disconnect(streamMicSendGain);
-                }
-            } catch {
-                // Already disconnected.
-            }
-            try {
                 streamMicSendGain.disconnect();
             } catch {
                 // Already disconnected.
             }
             streamMicSendGain = null;
+        }
+
+        if (streamMicGateGain) {
+            try {
+                streamMicGateGain.disconnect();
+            } catch {
+                // Already disconnected.
+            }
+            streamMicGateGain = null;
+        }
+
+        if (streamMicPresence) {
+            try {
+                streamMicPresence.disconnect();
+            } catch {
+                // Already disconnected.
+            }
+            streamMicPresence = null;
         }
 
         if (streamMicHighpass) {
@@ -1084,6 +1101,8 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
             }
             streamMicHighpass = null;
         }
+
+        micGateIsOpen = true;
     }
 
     function connectMicToStreamMix() {
@@ -1093,16 +1112,29 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
 
         disconnectMicFromStreamMix();
 
+        // Cut rumble, add a touch of presence, then softly gate quiet room noise.
         streamMicHighpass = audioContext.createBiquadFilter();
         streamMicHighpass.type = 'highpass';
-        streamMicHighpass.frequency.value = 70;
+        streamMicHighpass.frequency.value = 90;
         streamMicHighpass.Q.value = 0.7;
+
+        streamMicPresence = audioContext.createBiquadFilter();
+        streamMicPresence.type = 'peaking';
+        streamMicPresence.frequency.value = 2800;
+        streamMicPresence.Q.value = 0.9;
+        streamMicPresence.gain.value = 2.5;
+
+        streamMicGateGain = audioContext.createGain();
+        streamMicGateGain.gain.value = MIC_GATE_OPEN_GAIN;
+        micGateIsOpen = true;
 
         streamMicSendGain = audioContext.createGain();
         streamMicSendGain.gain.value = 1;
 
         micGainNode.connect(streamMicHighpass);
-        streamMicHighpass.connect(streamMicSendGain);
+        streamMicHighpass.connect(streamMicPresence);
+        streamMicPresence.connect(streamMicGateGain);
+        streamMicGateGain.connect(streamMicSendGain);
         streamMicSendGain.connect(streamMixGainNode);
     }
 
@@ -1950,6 +1982,21 @@ import { WhipSession } from './stream/whip-session.js?v=20260811a';
         const level = Math.min(100, rms * 320);
         elements.micLevel.style.width = `${level}%`;
         elements.micStatus.textContent = level > 2 ? 'Active' : 'Quiet';
+
+        if (streamMicGateGain && audioContext && audioContext.state !== 'closed') {
+            if (micGateIsOpen && rms < MIC_GATE_CLOSE_RMS) {
+                micGateIsOpen = false;
+            } else if (!micGateIsOpen && rms > MIC_GATE_OPEN_RMS) {
+                micGateIsOpen = true;
+            }
+
+            const targetGain = micGateIsOpen ? MIC_GATE_OPEN_GAIN : MIC_GATE_CLOSED_GAIN;
+            streamMicGateGain.gain.setTargetAtTime(
+                targetGain,
+                audioContext.currentTime,
+                micGateIsOpen ? 0.03 : 0.08,
+            );
+        }
 
         levelAnimationId = requestAnimationFrame(updateMicLevel);
     }
