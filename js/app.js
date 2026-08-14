@@ -1,7 +1,7 @@
-import { AdaptiveQualityPolicy } from './stream/adaptive-quality.js?v=20260814h';
-import { StreamAudioPipeline, buildMicConstraints, applyRawMicProcessing } from './stream/audio-pipeline.js?v=20260814h';
-import { PublishSource, detectInsertableVideoSupport } from './stream/publish-source.js?v=20260814h';
-import { WhipSession } from './stream/whip-session.js?v=20260814h';
+import { AdaptiveQualityPolicy } from './stream/adaptive-quality.js?v=20260814i';
+import { StreamAudioPipeline, buildMicConstraints, applyRawMicProcessing } from './stream/audio-pipeline.js?v=20260814i';
+import { PublishSource, detectInsertableVideoSupport } from './stream/publish-source.js?v=20260814i';
+import { WhipSession } from './stream/whip-session.js?v=20260814i';
 
 (function () {
     'use strict';

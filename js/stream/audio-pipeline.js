@@ -203,7 +203,7 @@ export class StreamAudioPipeline {
         const stream = new MediaStream([track]);
         this.micSource = this.context.createMediaStreamSource(stream);
         this.micGain = this.context.createGain();
-        this.micGain.gain.value = 1;
+        this.micGain.gain.value = 0.03;
         this.micAnalyser = this.context.createAnalyser();
         this.micAnalyser.fftSize = 2048;
         this.micAnalyser.smoothingTimeConstant = 0.8;
