@@ -142,7 +142,7 @@
                             <option value="">Loading microphones…</option>
                         </select>
                         <p id="mic-link-hint" class="field-hint hidden">Matched to your selected camera automatically.</p>
-                        <p class="field-hint">You can switch microphones while streaming. Noise suppression and a soft gate reduce quiet room noise.</p>
+                        <p class="field-hint">You can switch microphones while streaming. Browser noise suppression reduces background hiss without cutting your voice.</p>
                     </div>
 
                     <div class="setting-group">
@@ -185,11 +185,11 @@
                         <div class="stream-actions">
                             <button id="stream-start-btn" type="button" class="btn btn-primary">Start streaming</button>
                             <button id="stream-stop-btn" type="button" class="btn btn-ghost" disabled>Stop streaming</button>
-                            <button id="stream-monitor-btn" type="button" class="btn btn-secondary" aria-pressed="false" title="Play the same mix viewers hear (mic, music, and effects). Use headphones to avoid feedback.">Hear stream audio</button>
+                            <button id="stream-monitor-btn" type="button" class="btn btn-secondary" aria-pressed="false" title="Play mic, music, and effects on this PC. Use headphones — echo cancellation is off so speakers will feed back.">Hear stream audio</button>
                             <button id="mute-local-audio-btn" type="button" class="btn btn-secondary" aria-pressed="false" title="Silence music and effects on this computer. Stream audio is unchanged.">Mute local audio</button>
                         </div>
 
-                        <p class="field-hint">Hear stream audio plays the full mix locally. Mute local audio keeps mic/music/effects on the stream but silent on this PC — useful with speakers.</p>
+                        <p class="field-hint">Mic is captured dry (like Sound Recorder) so talking stays at a steady level. Hear stream audio plays mic, music, and effects locally — use headphones. Mute local audio keeps the WHIP stream unchanged but silent on this PC.</p>
 
                         <p id="stream-output-status" class="stream-output-status" role="status" aria-live="polite">Ready to stream</p>
                     </div>
@@ -399,6 +399,6 @@
 
     <audio id="music-player"></audio>
 
-    <script type="module" src="js/app.js?v=20260814c"></script>
+    <script type="module" src="js/app.js?v=20260814h"></script>
 </body>
 </html>
