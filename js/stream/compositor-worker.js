@@ -10,7 +10,7 @@ import {
     soldBannerGeometry,
     soldValues,
     timelineProgress
-} from './composition-math.js?v=20260715d';
+} from './composition-math.js?v=20260811a';
 
 const scope = globalThis;
 let canvas = null;
@@ -225,12 +225,9 @@ function scheduleNext() {
         return;
     }
 
+    // Keep producing every frame at the target FPS. Skipping frame numbers when
+    // behind made outbound stats drop into the low 20s even though the target is 30.
     const interval = 1000 / settings.fps;
-    const now = performance.now();
-    const expectedFrame = Math.max(frameNumber, Math.floor((now - startTime) / interval));
-    if (expectedFrame > frameNumber) {
-        frameNumber = expectedFrame;
-    }
     const deadline = startTime + frameNumber * interval;
     timer = setTimeout(() => {
         renderAt(deadline).catch(reportError);

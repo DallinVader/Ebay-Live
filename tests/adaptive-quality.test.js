@@ -23,7 +23,7 @@ test('quality levels expose the required three encodings', () => {
         [
             [1, 3_000_000, 30],
             [4 / 3, 2_000_000, 30],
-            [2, 1_000_000, 24]
+            [2, 1_000_000, 30]
         ]
     );
 });

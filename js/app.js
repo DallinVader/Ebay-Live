@@ -1,6 +1,6 @@
-import { AdaptiveQualityPolicy } from './stream/adaptive-quality.js?v=20260715d';
-import { PublishSource, detectInsertableVideoSupport } from './stream/publish-source.js?v=20260715d';
-import { WhipSession } from './stream/whip-session.js?v=20260715d';
+import { AdaptiveQualityPolicy } from './stream/adaptive-quality.js?v=20260811a';
+import { PublishSource, detectInsertableVideoSupport } from './stream/publish-source.js?v=20260811a';
+import { WhipSession } from './stream/whip-session.js?v=20260811a';
 
 (function () {
     'use strict';
@@ -175,7 +175,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
             outputWidth: 360,
             outputHeight: 640,
             maxBitrate: 2200000,
-            frameRate: 24,
+            frameRate: 30,
         },
         medium: {
             cameraWidth: 1280,
@@ -547,7 +547,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         elements.streamStartBtn.disabled = live;
         elements.streamStopBtn.disabled = !live;
         elements.cameraSelect.disabled = live;
-        elements.micSelect.disabled = live;
+        elements.micSelect.disabled = isOutputStarting;
         elements.overlayEnabledToggle.disabled = live;
         elements.mainCameraResolution.disabled = live;
         elements.cameraResolution.disabled = live;
@@ -560,7 +560,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         elements.streamStartBtn.disabled = starting || isOutputStreaming;
         const lockSources = starting || isOutputStreaming;
         elements.cameraSelect.disabled = lockSources;
-        elements.micSelect.disabled = lockSources;
+        elements.micSelect.disabled = starting;
         elements.overlayEnabledToggle.disabled = lockSources;
         setOverlayControlsEnabled(elements.overlayEnabledToggle.checked);
     }
@@ -956,18 +956,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         updateMuteLocalAudioButton();
     }
 
-    function teardownStreamAudioMix() {
-        streamAudioMixActive = false;
-        stopStreamMonitorNodes();
-
-        if (musicStreamGain && streamMixGainNode) {
-            try {
-                musicStreamGain.disconnect(streamMixGainNode);
-            } catch {
-                // Already disconnected.
-            }
-        }
-
+    function disconnectMicFromStreamMix() {
         if (streamMicSendGain) {
             try {
                 if (streamMicHighpass) {
@@ -999,6 +988,41 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
             }
             streamMicHighpass = null;
         }
+    }
+
+    function connectMicToStreamMix() {
+        if (!streamAudioMixActive || !streamMixGainNode || !micGainNode || !audioContext) {
+            return;
+        }
+
+        disconnectMicFromStreamMix();
+
+        streamMicHighpass = audioContext.createBiquadFilter();
+        streamMicHighpass.type = 'highpass';
+        streamMicHighpass.frequency.value = 70;
+        streamMicHighpass.Q.value = 0.7;
+
+        streamMicSendGain = audioContext.createGain();
+        streamMicSendGain.gain.value = 1;
+
+        micGainNode.connect(streamMicHighpass);
+        streamMicHighpass.connect(streamMicSendGain);
+        streamMicSendGain.connect(streamMixGainNode);
+    }
+
+    function teardownStreamAudioMix() {
+        streamAudioMixActive = false;
+        stopStreamMonitorNodes();
+
+        if (musicStreamGain && streamMixGainNode) {
+            try {
+                musicStreamGain.disconnect(streamMixGainNode);
+            } catch {
+                // Already disconnected.
+            }
+        }
+
+        disconnectMicFromStreamMix();
 
         if (streamSfxGain) {
             try {
@@ -1061,22 +1085,10 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         streamSfxGain.gain.value = elements.effectSfxVolume.value / 100;
         streamSfxGain.connect(streamMixGainNode);
 
-        if (micGainNode) {
-            streamMicHighpass = audioContext.createBiquadFilter();
-            streamMicHighpass.type = 'highpass';
-            streamMicHighpass.frequency.value = 70;
-            streamMicHighpass.Q.value = 0.7;
-
-            streamMicSendGain = audioContext.createGain();
-            streamMicSendGain.gain.value = 1;
-
-            micGainNode.connect(streamMicHighpass);
-            streamMicHighpass.connect(streamMicSendGain);
-            streamMicSendGain.connect(streamMixGainNode);
-        }
+        streamAudioMixActive = true;
+        connectMicToStreamMix();
 
         musicStreamGain.connect(streamMixGainNode);
-        streamAudioMixActive = true;
         updateMusicStreamGains();
 
         return streamPublishAudioDest.stream.getAudioTracks()[0] || null;
@@ -1805,10 +1817,6 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         micLevelData = null;
         elements.micLevel.style.width = '0%';
 
-        if (streamMonitorEnabled) {
-            void applyStreamMonitor();
-        }
-
         // Keep shared AudioContext alive for music / stream mix.
         if (!streamAudioMixActive && !musicMediaSource && audioContext && audioContext.state !== 'closed') {
             audioContext.close().catch(() => {});
@@ -1898,6 +1906,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
     function stopMainStream() {
         mainStreamRequestId += 1;
         teardownMicAudio();
+        void applyStreamMonitor();
 
         if (mediaStream) {
             mediaStream.getTracks().forEach((track) => track.stop());
@@ -2173,10 +2182,82 @@ import { WhipSession } from './stream/whip-session.js?v=20260715d';
         await updateOverlayCamera();
     }
 
+    async function hotSwapMicrophone() {
+        const selectedMicId = getMicDeviceId();
+        if (!selectedMicId) {
+            elements.micStatus.textContent = 'No mic';
+            return;
+        }
+
+        elements.micSelect.disabled = true;
+        elements.micStatus.textContent = 'Switching…';
+
+        try {
+            const newTrack = await openSelectedMicrophone(selectedMicId);
+            if (!newTrack) {
+                throw new Error('Could not open the selected microphone.');
+            }
+
+            const previousStreamMic = streamMicTrack;
+            const previousMediaTracks = mediaStream
+                ? mediaStream.getAudioTracks().slice()
+                : [];
+
+            if (mediaStream) {
+                previousMediaTracks.forEach((track) => {
+                    mediaStream.removeTrack(track);
+                });
+                mediaStream.addTrack(newTrack);
+            }
+
+            streamMicTrack = newTrack;
+
+            // Detach old mic from the live mix first so teardown cannot leave a dangling send path.
+            disconnectMicFromStreamMix();
+            await setupMicAudio(newTrack);
+            connectMicToStreamMix();
+
+            if (streamMonitorEnabled) {
+                await applyStreamMonitor();
+            }
+
+            previousMediaTracks.forEach((track) => {
+                if (track !== newTrack && track.readyState !== 'ended') {
+                    track.stop();
+                }
+            });
+
+            if (
+                previousStreamMic
+                && previousStreamMic !== newTrack
+                && previousStreamMic.readyState !== 'ended'
+                && !previousMediaTracks.includes(previousStreamMic)
+            ) {
+                previousStreamMic.stop();
+            }
+
+            saveStreamSettings();
+        } catch (error) {
+            console.error('Microphone switch failed:', error);
+            elements.micStatus.textContent = 'Mic switch failed';
+            updateStreamOutputStatus(
+                `Microphone switch failed: ${error?.message || error}`,
+                'is-error',
+            );
+        } finally {
+            elements.micSelect.disabled = isOutputStarting;
+        }
+    }
+
     async function handleMicChange() {
         micManuallySelected = true;
         elements.micLinkHint.classList.add('hidden');
         saveStreamSettings();
+
+        if (isOutputStreaming) {
+            await hotSwapMicrophone();
+            return;
+        }
 
         await startStream(elements.cameraSelect.value || null, getMicDeviceId());
     }

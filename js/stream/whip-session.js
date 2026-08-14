@@ -4,7 +4,7 @@ import {
     AdaptiveQualityPolicy,
     QUALITY_LEVELS,
     STATS_INTERVAL_MS
-} from './adaptive-quality.js?v=20260715d';
+} from './adaptive-quality.js?v=20260811a';
 
 const DEFAULT_ICE_TIMEOUT_MS = 12_000;
 const DEFAULT_HTTP_TIMEOUT_MS = 15_000;

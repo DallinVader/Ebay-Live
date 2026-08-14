@@ -23,7 +23,7 @@ export const QUALITY_LEVELS = Object.freeze({
         height: 640,
         scaleResolutionDownBy: 2,
         maxBitrate: 1_000_000,
-        maxFramerate: 24
+        maxFramerate: 30
     })
 });
 
