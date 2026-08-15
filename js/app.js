@@ -83,6 +83,9 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
         soldImageResetBtn: document.getElementById('sold-image-reset-btn'),
         soldImagePreview: document.getElementById('sold-image-preview'),
         soldImageName: document.getElementById('sold-image-name'),
+        soldSoundUpload: document.getElementById('sold-sound-upload'),
+        soldSoundResetBtn: document.getElementById('sold-sound-reset-btn'),
+        soldSoundName: document.getElementById('sold-sound-name'),
         effectTestBtn: document.getElementById('effect-test-btn'),
         effectSizeMin: document.getElementById('effect-size-min'),
         effectSizeMax: document.getElementById('effect-size-max'),
@@ -159,6 +162,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
     const EFFECT_SETTINGS_KEY = 'ebayLiveEffectSettings';
     const EFFECT_PAIRS_KEY = 'ebayLiveEffectPairs';
     const SOLD_IMAGE_SETTINGS_KEY = 'ebayLiveSoldImage';
+    const SOLD_SOUND_ASSET_ID = 'sold-sound';
     const HIDDEN_MEDIA_KEY = 'ebayLiveHiddenMedia';
     const ASSET_DB_NAME = 'ebayLiveAssetCache';
     const ASSET_DB_VERSION = 1;
@@ -240,6 +244,9 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
     let soldImageUrl = SOLD_IMAGE_URL;
     let soldImageName = 'Sold.png';
     let soldImageIsCustom = false;
+    let soldSoundUrl = '';
+    let soldSoundName = '';
+    let soldSoundIsCustom = false;
     let assetDbPromise = null;
 
     function openAssetDb() {
@@ -359,6 +366,13 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
                 if (record.kind === 'image') {
                     images.push(item);
                     effectIdCounter = bumpIdCounterFromAssetId(record.id, 'effect-', effectIdCounter);
+                } else if (record.kind === 'sold-sound') {
+                    if (soldSoundUrl?.startsWith('blob:')) {
+                        URL.revokeObjectURL(soldSoundUrl);
+                    }
+                    soldSoundUrl = url;
+                    soldSoundName = record.name || 'Custom sound';
+                    soldSoundIsCustom = true;
                 } else if (record.kind === 'sound') {
                     sounds.push(item);
                     effectIdCounter = bumpIdCounterFromAssetId(record.id, 'sound-', effectIdCounter);
@@ -371,6 +385,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
             effectImages = [...effectImages.filter((item) => item.isDefault), ...images];
             effectSounds = [...effectSounds.filter((item) => item.isDefault), ...sounds];
             musicTracks = [...musicTracks.filter((item) => item.isDefault), ...tracks];
+            updateSoldSoundUi();
         } catch (error) {
             console.warn('Could not restore uploaded assets from cache:', error);
         }
@@ -424,7 +439,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
 
     async function resetAllAssets() {
         const confirmed = window.confirm(
-            'Reset all assets to defaults?\n\nThis removes uploaded Images, Sounds, and Music from cache, restores any hidden preset files, and resets the SOLD graphic.',
+            'Reset all assets to defaults?\n\nThis removes uploaded Images, Sounds, and Music from cache, restores any hidden preset files, and resets the SOLD graphic and sound.',
         );
 
         if (!confirmed) {
@@ -464,6 +479,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
         resetSoundRepeatTracking();
         clearHiddenFolderMedia();
         resetSoldImage();
+        resetSoldSound();
 
         try {
             await clearUploadedAssetRecords();
@@ -3579,6 +3595,79 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
         reader.readAsDataURL(file);
     }
 
+    function updateSoldSoundUi() {
+        if (elements.soldSoundName) {
+            elements.soldSoundName.textContent = soldSoundIsCustom && soldSoundName
+                ? `Sound: ${soldSoundName}`
+                : 'No sound — SOLD is silent until you upload one.';
+        }
+
+        if (elements.soldSoundResetBtn) {
+            elements.soldSoundResetBtn.disabled = !soldSoundIsCustom;
+        }
+    }
+
+    function playSoldSound() {
+        if (!soldSoundUrl) {
+            return;
+        }
+
+        playSoundUrl(soldSoundUrl);
+    }
+
+    async function setSoldSoundFromFile(file) {
+        if (soldSoundUrl?.startsWith('blob:')) {
+            URL.revokeObjectURL(soldSoundUrl);
+        }
+
+        audioPipeline.bufferCache.delete(soldSoundUrl);
+        effectSoundBufferCache.delete(soldSoundUrl);
+
+        soldSoundUrl = URL.createObjectURL(file);
+        soldSoundName = file.name || 'Custom sound';
+        soldSoundIsCustom = true;
+        updateSoldSoundUi();
+
+        try {
+            await saveUploadedAssetRecord({
+                id: SOLD_SOUND_ASSET_ID,
+                kind: 'sold-sound',
+                name: soldSoundName,
+                type: file.type || 'application/octet-stream',
+                blob: file,
+            });
+        } catch (error) {
+            console.warn('Could not cache SOLD sound:', error);
+        }
+    }
+
+    function resetSoldSound() {
+        if (soldSoundUrl?.startsWith('blob:')) {
+            URL.revokeObjectURL(soldSoundUrl);
+        }
+
+        audioPipeline.bufferCache.delete(soldSoundUrl);
+        effectSoundBufferCache.delete(soldSoundUrl);
+        soldSoundUrl = '';
+        soldSoundName = '';
+        soldSoundIsCustom = false;
+        updateSoldSoundUi();
+        void deleteUploadedAssetRecord(SOLD_SOUND_ASSET_ID).catch((error) => {
+            console.warn('Could not remove cached SOLD sound:', error);
+        });
+    }
+
+    function handleSoldSoundUpload(event) {
+        const file = event.target.files?.[0];
+        event.target.value = '';
+
+        if (!file || !file.type.startsWith('audio/')) {
+            return;
+        }
+
+        void setSoldSoundFromFile(file);
+    }
+
     function spawnSoldOnLayer(layer) {
         layer.querySelectorAll('.sold-effect').forEach((effect) => {
             effect.remove();
@@ -3654,7 +3743,8 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
     }
 
     function triggerSoldOverlay() {
-        // SOLD is its own graphic — do not pull a random POW sound effect.
+        playSoldSound();
+
         if (isOutputStreaming) {
             void spawnPublishedSold().catch((error) => {
                 console.warn('Could not render SOLD in stream:', error);
@@ -3963,6 +4053,8 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
     });
     elements.soldImageUpload.addEventListener('change', handleSoldImageUpload);
     elements.soldImageResetBtn.addEventListener('click', resetSoldImage);
+    elements.soldSoundUpload.addEventListener('change', handleSoldSoundUpload);
+    elements.soldSoundResetBtn.addEventListener('click', resetSoldSound);
 
     [
         elements.effectSizeMin,
@@ -3998,6 +4090,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
     updateHotkeyFooter();
     loadEffectPairPrefs();
     loadSoldImageSettings();
+    updateSoldSoundUi();
     loadHiddenFolderMedia();
 
     void (async () => {

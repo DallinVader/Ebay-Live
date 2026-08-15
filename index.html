@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>eBay Live — Stream Console</title>
-    <link rel="stylesheet" href="css/styles.css?v=20260815b">
+    <link rel="stylesheet" href="css/styles.css?v=20260815c">
 </head>
 <body>
     <div id="app">
@@ -347,7 +347,7 @@
 
                             <div class="setting-group sold-overlay-group">
                                 <label>SOLD overlay</label>
-                                <p class="field-hint">1960s Batman-style spin — centers on screen and whirls into view. Upload any image to replace the default SOLD graphic.</p>
+                                <p class="field-hint">1960s Batman-style spin — centers on screen and whirls into view. Upload any image to replace the default SOLD graphic, and optionally a sound that plays with it.</p>
 
                                 <div class="sold-image-row">
                                     <div class="sold-image-preview-wrap">
@@ -360,6 +360,15 @@
                                     </div>
                                 </div>
                                 <p id="sold-image-name" class="field-hint">Default: Sold.png</p>
+
+                                <div class="sold-sound-row">
+                                    <div class="sold-image-actions">
+                                        <label for="sold-sound-upload" class="btn btn-secondary sold-upload-label">Upload sound</label>
+                                        <input type="file" id="sold-sound-upload" accept="audio/*" class="hidden-file-input">
+                                        <button id="sold-sound-reset-btn" type="button" class="btn btn-ghost" disabled>Remove sound</button>
+                                    </div>
+                                </div>
+                                <p id="sold-sound-name" class="field-hint">No sound — SOLD is silent until you upload one.</p>
 
                                 <div class="hotkey-row">
                                     <button id="sold-hotkey-set-btn" type="button" class="btn btn-secondary hotkey-btn">
@@ -399,6 +408,6 @@
 
     <audio id="music-player"></audio>
 
-    <script type="module" src="js/app.js?v=20260815b"></script>
+    <script type="module" src="js/app.js?v=20260815c"></script>
 </body>
 </html>
