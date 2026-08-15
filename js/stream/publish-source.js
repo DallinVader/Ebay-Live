@@ -79,7 +79,7 @@ export class PublishSource {
         height = COMPOSITION_HEIGHT,
         fps = COMPOSITION_FPS,
         initialState = {},
-        workerUrl = new URL('./compositor-worker.js?v=20260815a', import.meta.url),
+        workerUrl = new URL('./compositor-worker.js?v=20260815b', import.meta.url),
         scope = globalThis,
         onError = () => {}
     }) {
@@ -190,6 +190,50 @@ export class PublishSource {
         bitmap = null
     } = {}) {
         this.spawn('sold', { text, bitmap }, durationMs, bitmap ? [bitmap] : []);
+    }
+
+    replaceMain(streamOrTrack) {
+        this.replaceInput('main', streamOrTrack);
+    }
+
+    replaceOverlay(streamOrTrack = null) {
+        this.replaceInput('overlay', streamOrTrack);
+    }
+
+    replaceInput(slot, streamOrTrack) {
+        this.assertActive();
+        if (slot !== 'main' && slot !== 'overlay') {
+            throw new RangeError(`Unknown compositor input slot: ${slot}`);
+        }
+
+        if (slot === 'main' && !streamOrTrack) {
+            throw new TypeError('Main camera track is required');
+        }
+
+        let nextTrack = null;
+        let nextProcessor = null;
+        let readable = null;
+
+        if (streamOrTrack) {
+            nextTrack = videoTrackFrom(streamOrTrack, slot);
+            nextProcessor = new this.support.Processor({ track: nextTrack });
+            readable = nextProcessor.readable;
+        }
+
+        if (slot === 'main') {
+            this.mainTrack = nextTrack;
+            this.mainProcessor = nextProcessor;
+        } else {
+            this.overlayTrack = nextTrack;
+            this.overlayProcessor = nextProcessor;
+        }
+
+        const message = {
+            type: 'replace-input',
+            slot,
+            readable
+        };
+        this.worker.postMessage(message, readable ? [readable] : []);
     }
 
     update(patch) {

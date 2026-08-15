@@ -1,6 +1,6 @@
 import { AdaptiveQualityPolicy } from './stream/adaptive-quality.js?v=20260814i';
 import { StreamAudioPipeline, buildMicConstraints, applyRawMicProcessing } from './stream/audio-pipeline.js?v=20260814i';
-import { PublishSource, detectInsertableVideoSupport } from './stream/publish-source.js?v=20260815a';
+import { PublishSource, detectInsertableVideoSupport } from './stream/publish-source.js?v=20260815b';
 import { WhipSession } from './stream/whip-session.js?v=20260814i';
 
 (function () {
@@ -529,6 +529,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
     let activeWhipSession = null;
     let publishedPreviewStream = null;
     let syntheticMainTrack = null;
+    let cameraSwapQueue = Promise.resolve();
     let activeWhipEndpoint = null;
     let reconnectAttempt = 0;
     let whipReconnectInFlight = false;
@@ -565,11 +566,8 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
     function updateLiveLockHints(live) {
         const hint = live ? 'Stop streaming to change this setting.' : '';
         [
-            elements.cameraSelect,
             elements.mainCameraResolution,
             elements.cameraResolution,
-            elements.overlayEnabledToggle,
-            elements.overlayCameraSelect,
             elements.overlayCameraResolution,
         ].forEach((el) => {
             if (!el) {
@@ -601,9 +599,9 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
         isOutputStreaming = live;
         elements.streamStartBtn.disabled = live;
         elements.streamStopBtn.disabled = !live;
-        elements.cameraSelect.disabled = live;
+        elements.cameraSelect.disabled = isOutputStarting;
         elements.micSelect.disabled = isOutputStarting;
-        elements.overlayEnabledToggle.disabled = live;
+        elements.overlayEnabledToggle.disabled = isOutputStarting;
         elements.mainCameraResolution.disabled = live;
         elements.cameraResolution.disabled = live;
         setOverlayControlsEnabled(elements.overlayEnabledToggle.checked);
@@ -614,10 +612,9 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
     function setOutputStartingState(starting) {
         isOutputStarting = starting;
         elements.streamStartBtn.disabled = starting || isOutputStreaming;
-        const lockSources = starting || isOutputStreaming;
-        elements.cameraSelect.disabled = lockSources;
+        elements.cameraSelect.disabled = starting;
         elements.micSelect.disabled = starting;
-        elements.overlayEnabledToggle.disabled = lockSources;
+        elements.overlayEnabledToggle.disabled = starting;
         setOverlayControlsEnabled(elements.overlayEnabledToggle.checked);
     }
 
@@ -1070,8 +1067,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
         const context = canvas.getContext('2d', { alpha: false });
         context.fillStyle = '#000000';
         context.fillRect(0, 0, canvas.width, canvas.height);
-        syntheticMainTrack = canvas.captureStream(1).getVideoTracks()[0];
-        return syntheticMainTrack;
+        return canvas.captureStream(1).getVideoTracks()[0];
     }
 
     function getWorkerCompositionState(hasOverlay) {
@@ -1207,7 +1203,12 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
         await setupStreamAudioMix();
         const mixedAudioTrack = audioPipeline.publishTrack;
 
-        const mainTrack = mediaStream?.getVideoTracks()[0] || createSyntheticVideoTrack();
+        let mainTrack = mediaStream?.getVideoTracks()[0] || null;
+        if (!mainTrack) {
+            syntheticMainTrack?.stop();
+            syntheticMainTrack = createSyntheticVideoTrack();
+            mainTrack = syntheticMainTrack;
+        }
         const overlayTrack = elements.overlayEnabledToggle.checked
             ? overlayMediaStream?.getVideoTracks()[0] || null
             : null;
@@ -1473,9 +1474,10 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
     }
 
     function setOverlayControlsEnabled(enabled) {
-        const lockSources = isOutputStarting || isOutputStreaming;
-        elements.overlayCameraSelect.disabled = !enabled || lockSources;
-        elements.overlayCameraResolution.disabled = !enabled || lockSources;
+        const starting = isOutputStarting;
+        const lockQuality = starting || isOutputStreaming;
+        elements.overlayCameraSelect.disabled = !enabled || starting;
+        elements.overlayCameraResolution.disabled = !enabled || lockQuality;
         elements.overlayLayout.disabled = !enabled;
         elements.overlayAspect.disabled = !enabled || isSplitOverlayLayout();
         elements.overlaySize.disabled = !enabled || isSplitOverlayLayout();
@@ -1694,6 +1696,13 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
         applyOverlayCameraMirror();
         saveStreamSettings();
 
+        if (isOutputStreaming) {
+            await queueCameraSwap(async () => {
+                await hotSwapOverlayCamera();
+            });
+            return;
+        }
+
         if (!elements.overlayEnabledToggle.checked) {
             stopOverlayStream();
             return;
@@ -1833,6 +1842,213 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
         return micDevices[0]?.deviceId || null;
     }
 
+    function queueCameraSwap(work) {
+        const run = cameraSwapQueue.then(work);
+        cameraSwapQueue = run.then(() => undefined, () => undefined);
+        return run;
+    }
+
+    function videoDeviceIdFrom(streamOrTrack) {
+        const track = streamOrTrack?.kind === 'video'
+            ? streamOrTrack
+            : streamOrTrack?.getVideoTracks?.()[0];
+        return track?.getSettings?.()?.deviceId || '';
+    }
+
+    async function openCameraTrack(cameraId, quality) {
+        const cameraStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                deviceId: { exact: cameraId },
+                width: { ideal: quality.cameraWidth },
+                height: { ideal: quality.cameraHeight },
+                frameRate: { ideal: quality.frameRate, max: quality.frameRate },
+            },
+            audio: false,
+        });
+        const videoTrack = cameraStream.getVideoTracks()[0] || null;
+        cameraStream.getTracks().forEach((track) => {
+            if (track !== videoTrack) {
+                track.stop();
+            }
+        });
+        if (videoTrack) {
+            videoTrack.contentHint = 'motion';
+        }
+        return videoTrack;
+    }
+
+    async function hotSwapMainCamera() {
+        if (!activePublishSource) {
+            return;
+        }
+
+        const cameraId = elements.cameraSelect.value || '';
+        const currentTrack = mediaStream?.getVideoTracks()[0]
+            || (activePublishSource.mainTrack?.readyState === 'live' ? activePublishSource.mainTrack : null);
+        const currentId = videoDeviceIdFrom(currentTrack);
+
+        if (cameraId && currentId === cameraId && currentTrack?.readyState === 'live') {
+            return;
+        }
+        if (!cameraId && currentTrack && currentTrack === syntheticMainTrack) {
+            return;
+        }
+
+        elements.cameraSelect.disabled = true;
+        updateStreamOutputStatus('Switching camera…');
+
+        try {
+            const overlayDeviceId = videoDeviceIdFrom(overlayMediaStream);
+            if (cameraId && overlayDeviceId === cameraId) {
+                activePublishSource.replaceOverlay(null);
+                activePublishSource.setLayout('single');
+                const previousOverlay = overlayMediaStream;
+                overlayMediaStream = null;
+                previousOverlay?.getTracks().forEach((track) => track.stop());
+            }
+
+            const nextTrack = cameraId
+                ? await openCameraTrack(cameraId, getMainCameraQualityPreset())
+                : createSyntheticVideoTrack();
+
+            if (!nextTrack) {
+                throw new Error('Could not open the selected camera.');
+            }
+
+            if (!activePublishSource) {
+                nextTrack.stop();
+                return;
+            }
+
+            const previousVideoTracks = mediaStream ? mediaStream.getVideoTracks().slice() : [];
+            const previousSynthetic = syntheticMainTrack;
+            const previousMain = activePublishSource.mainTrack;
+
+            activePublishSource.replaceMain(nextTrack);
+
+            if (cameraId) {
+                if (mediaStream) {
+                    previousVideoTracks.forEach((track) => mediaStream.removeTrack(track));
+                    mediaStream.addTrack(nextTrack);
+                } else {
+                    mediaStream = new MediaStream([nextTrack]);
+                }
+                syntheticMainTrack = null;
+            } else {
+                previousVideoTracks.forEach((track) => mediaStream?.removeTrack(track));
+                syntheticMainTrack = nextTrack;
+            }
+
+            previousVideoTracks.forEach((track) => {
+                if (track !== nextTrack && track.readyState !== 'ended') {
+                    track.stop();
+                }
+            });
+            if (
+                previousMain
+                && previousMain !== nextTrack
+                && previousMain.readyState !== 'ended'
+                && !previousVideoTracks.includes(previousMain)
+            ) {
+                previousMain.stop();
+            }
+            if (
+                previousSynthetic
+                && previousSynthetic !== nextTrack
+                && previousSynthetic.readyState !== 'ended'
+                && !previousVideoTracks.includes(previousSynthetic)
+            ) {
+                previousSynthetic.stop();
+            }
+
+            elements.cameraError.classList.add('hidden');
+            elements.fullscreenCameraPlaceholder.classList.toggle('hidden', Boolean(cameraId));
+            if (isOutputStreaming) {
+                updateStreamOutputStatus('Streaming to eBay Live (adaptive WHIP)', 'is-live');
+            }
+        } catch (error) {
+            console.error('Camera switch failed:', error);
+            elements.cameraError.classList.remove('hidden');
+            updateStreamOutputStatus(
+                `Camera switch failed: ${error?.message || error}`,
+                'is-error',
+            );
+            throw error;
+        } finally {
+            elements.cameraSelect.disabled = isOutputStarting;
+        }
+    }
+
+    async function hotSwapOverlayCamera() {
+        if (!activePublishSource) {
+            return;
+        }
+
+        const enabled = elements.overlayEnabledToggle.checked;
+        const cameraId = elements.overlayCameraSelect.value || '';
+        const currentTrack = overlayMediaStream?.getVideoTracks()[0] || null;
+        const currentId = videoDeviceIdFrom(currentTrack);
+
+        if (!enabled || !cameraId) {
+            if (activePublishSource.overlayTrack) {
+                activePublishSource.setLayout('single');
+                activePublishSource.replaceOverlay(null);
+            }
+            const previous = overlayMediaStream;
+            overlayMediaStream = null;
+            previous?.getTracks().forEach((track) => track.stop());
+            elements.previewOverlayWrap.classList.add('hidden');
+            elements.fullscreenOverlayWrap.classList.add('hidden');
+            applyOverlayLayoutMode();
+            return;
+        }
+
+        if (
+            currentId === cameraId
+            && currentTrack?.readyState === 'live'
+            && activePublishSource.overlayTrack === currentTrack
+        ) {
+            activePublishSource.setLayout(elements.overlayLayout.value);
+            return;
+        }
+
+        elements.overlayCameraSelect.disabled = true;
+
+        try {
+            const nextTrack = await openCameraTrack(cameraId, getOverlayCameraQualityPreset());
+            if (!nextTrack) {
+                throw new Error('Could not open the overlay camera.');
+            }
+
+            if (!activePublishSource || !elements.overlayEnabledToggle.checked) {
+                nextTrack.stop();
+                return;
+            }
+
+            const previous = overlayMediaStream;
+            overlayMediaStream = new MediaStream([nextTrack]);
+            activePublishSource.replaceOverlay(nextTrack);
+            activePublishSource.setLayout(elements.overlayLayout.value);
+            previous?.getTracks().forEach((track) => {
+                if (track !== nextTrack && track.readyState !== 'ended') {
+                    track.stop();
+                }
+            });
+            elements.previewOverlayWrap.classList.add('hidden');
+            elements.fullscreenOverlayWrap.classList.add('hidden');
+            applyOverlayLayoutMode();
+        } catch (error) {
+            console.error('Overlay camera switch failed:', error);
+            updateStreamOutputStatus(
+                `Overlay camera switch failed: ${error?.message || error}`,
+                'is-error',
+            );
+            throw error;
+        } finally {
+            setOverlayControlsEnabled(elements.overlayEnabledToggle.checked);
+        }
+    }
+
     async function startStream(cameraId, micId) {
         const resolvedMicId = micId || getMicDeviceId();
         const quality = getMainCameraQualityPreset();
@@ -1845,22 +2061,10 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
 
         if (cameraId) {
             try {
-                const cameraStream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        deviceId: { exact: cameraId },
-                        width: { ideal: quality.cameraWidth },
-                        height: { ideal: quality.cameraHeight },
-                        frameRate: { ideal: quality.frameRate, max: quality.frameRate },
-                    },
-                    audio: false,
-                });
-                videoTrack = cameraStream.getVideoTracks()[0] || null;
-                if (videoTrack) {
-                    videoTrack.contentHint = 'motion';
-                }
+                videoTrack = await openCameraTrack(cameraId, quality);
 
                 if (requestId !== mainStreamRequestId) {
-                    cameraStream.getTracks().forEach((track) => track.stop());
+                    videoTrack?.stop();
                     return;
                 }
 
@@ -2003,7 +2207,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
 
         // Keep the currently selected mic unless this camera has a clear phone-mic match
         // and the user has not manually picked a mic this session.
-        if (!micManuallySelected) {
+        if (!micManuallySelected && !isOutputStreaming) {
             const matchedMic = findMatchingMic(
                 cameraDevices.find((device) => device.deviceId === elements.cameraSelect.value),
             );
@@ -2013,6 +2217,20 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
             } else {
                 elements.micLinkHint.classList.add('hidden');
             }
+        }
+
+        if (isOutputStreaming) {
+            await queueCameraSwap(async () => {
+                try {
+                    await hotSwapMainCamera();
+                } finally {
+                    if (isOutputStreaming && elements.overlayEnabledToggle.checked) {
+                        await hotSwapOverlayCamera();
+                    }
+                }
+            });
+            syncFullscreenState();
+            return;
         }
 
         await startStream(elements.cameraSelect.value || null, getMicDeviceId());

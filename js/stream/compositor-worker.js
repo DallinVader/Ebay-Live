@@ -24,6 +24,8 @@ let mainFrame = null;
 let overlayFrame = null;
 let mainReader = null;
 let overlayReader = null;
+let mainPumpId = 0;
+let overlayPumpId = 0;
 let state = Object.freeze({
     layout: 'single',
     mirrorMain: false,
@@ -52,20 +54,62 @@ function replaceFrame(slot, frame) {
     }
 }
 
-async function pumpFrames(reader, slot) {
+function currentPumpId(slot) {
+    return slot === 'main' ? mainPumpId : overlayPumpId;
+}
+
+function bumpPumpId(slot) {
+    if (slot === 'main') {
+        mainPumpId += 1;
+        return mainPumpId;
+    }
+    overlayPumpId += 1;
+    return overlayPumpId;
+}
+
+async function pumpFrames(reader, slot, pumpId) {
     try {
-        while (running) {
+        while (running && currentPumpId(slot) === pumpId) {
             const result = await reader.read();
             if (result.done) {
+                break;
+            }
+            if (currentPumpId(slot) !== pumpId) {
+                result.value?.close();
                 break;
             }
             replaceFrame(slot, result.value);
         }
     } catch (error) {
-        if (running) {
+        if (running && currentPumpId(slot) === pumpId) {
             scope.postMessage?.({ type: 'error', message: error.message });
         }
     }
+}
+
+function replaceInput(slot, readable) {
+    const pumpId = bumpPumpId(slot);
+    const previous = slot === 'main' ? mainReader : overlayReader;
+    void previous?.cancel().catch(() => {});
+
+    if (!readable) {
+        if (slot === 'main') {
+            mainReader = null;
+        } else {
+            overlayReader = null;
+            overlayFrame?.close();
+            overlayFrame = null;
+        }
+        return;
+    }
+
+    const reader = readable.getReader();
+    if (slot === 'main') {
+        mainReader = reader;
+    } else {
+        overlayReader = reader;
+    }
+    void pumpFrames(reader, slot, pumpId);
 }
 
 function drawFrame(frame, rectangle, mirror) {
@@ -297,9 +341,11 @@ function initialize(message) {
     running = true;
     frameNumber = 0;
     startTime = performance.now();
-    void pumpFrames(mainReader, 'main');
+    mainPumpId = 1;
+    overlayPumpId = overlayReader ? 1 : 0;
+    void pumpFrames(mainReader, 'main', mainPumpId);
     if (overlayReader) {
-        void pumpFrames(overlayReader, 'overlay');
+        void pumpFrames(overlayReader, 'overlay', overlayPumpId);
     }
     scheduleNext();
     scope.postMessage?.({ type: 'ready' });
@@ -325,6 +371,12 @@ scope.addEventListener?.('message', (event) => {
                 state = Object.freeze({ ...state, [message.kind]: timeline });
                 break;
             }
+            case 'replace-input':
+                if (message.slot !== 'main' && message.slot !== 'overlay') {
+                    throw new Error(`Unknown compositor input slot: ${message.slot}`);
+                }
+                replaceInput(message.slot, message.readable ?? null);
+                break;
             case 'stop':
                 void stop();
                 break;
