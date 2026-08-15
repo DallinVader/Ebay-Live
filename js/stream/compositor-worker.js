@@ -208,7 +208,9 @@ async function renderAt(deadline) {
     const outputFrame = new VideoFrame(canvas, {
         timestamp: Math.round((frameNumber * 1_000_000) / settings.fps),
         duration: Math.round(1_000_000 / settings.fps),
-        alpha: 'discard'
+        alpha: 'discard',
+        displayWidth: settings.width,
+        displayHeight: settings.height
     });
     try {
         await writer.write(outputFrame);

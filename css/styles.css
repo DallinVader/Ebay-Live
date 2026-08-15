@@ -206,6 +206,29 @@ body {
     max-height: 75vh;
 }
 
+/*
+ * While live, the preview shows the compositor's 720×1280 output — not the raw
+ * cameras. Keep a 9:16 stage and fill it. VideoTrackGenerator tracks often
+ * report a dummy intrinsic size (e.g. 300×150), so object-fit: cover would
+ * squash the picture even though the stream itself is correct.
+ */
+.stream-frame.composed-preview,
+.preview-wrapper .stream-frame.composed-preview.layout-split {
+    aspect-ratio: 9 / 16;
+    width: min(100%, min(22.5rem, calc(75vh * 9 / 16)));
+    height: auto;
+    max-height: 75vh;
+}
+
+.stream-frame.composed-preview .main-camera,
+.layout-split.composed-preview .main-camera {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: fill;
+}
+
 .camera-overlay-wrap {
     position: absolute;
     z-index: 4;
@@ -679,12 +702,34 @@ kbd {
     max-height: none;
 }
 
+.fullscreen-view .stream-frame.composed-preview,
+.fullscreen-view.layout-split .stream-frame.composed-preview {
+    width: min(100vw, calc(100vh * 9 / 16));
+    height: min(100vh, calc(100vw * 16 / 9));
+    aspect-ratio: 9 / 16;
+    max-width: none;
+    max-height: none;
+}
+
+.fullscreen-view .stream-frame.composed-preview .main-camera,
+.fullscreen-view.layout-split .stream-frame.composed-preview .main-camera {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: fill;
+}
+
 .fullscreen-view .main-camera {
     width: 100%;
     height: 100%;
     object-fit: cover;
     transform: translateZ(0);
     backface-visibility: hidden;
+}
+
+.fullscreen-view.composed-preview .main-camera {
+    object-fit: fill;
 }
 
 .fullscreen-view .overlay-camera {

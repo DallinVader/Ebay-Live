@@ -79,7 +79,7 @@ export class PublishSource {
         height = COMPOSITION_HEIGHT,
         fps = COMPOSITION_FPS,
         initialState = {},
-        workerUrl = new URL('./compositor-worker.js?v=20260811a', import.meta.url),
+        workerUrl = new URL('./compositor-worker.js?v=20260815a', import.meta.url),
         scope = globalThis,
         onError = () => {}
     }) {

@@ -1,6 +1,6 @@
 import { AdaptiveQualityPolicy } from './stream/adaptive-quality.js?v=20260814i';
 import { StreamAudioPipeline, buildMicConstraints, applyRawMicProcessing } from './stream/audio-pipeline.js?v=20260814i';
-import { PublishSource, detectInsertableVideoSupport } from './stream/publish-source.js?v=20260814i';
+import { PublishSource, detectInsertableVideoSupport } from './stream/publish-source.js?v=20260815a';
 import { WhipSession } from './stream/whip-session.js?v=20260814i';
 
 (function () {
@@ -631,7 +631,17 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
         return message;
     }
 
+    function syncComposedPreviewPresentation() {
+        const showingComposed = Boolean(publishedPreviewStream);
+        getLayoutContainers().forEach((container) => {
+            container.classList.toggle('composed-preview', showingComposed);
+        });
+        elements.fullscreenView.classList.toggle('composed-preview', showingComposed);
+    }
+
     function syncStreamVideoBindings() {
+        syncComposedPreviewPresentation();
+        applyOverlayLayoutMode();
         const displayStream = publishedPreviewStream || mediaStream;
 
         if (displayStream) {
@@ -1398,11 +1408,15 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
     function applyOverlayLayoutMode() {
         const useSplit = elements.overlayEnabledToggle.checked && isSplitOverlayLayout();
         const usePip = !isSplitOverlayLayout();
+        // The published preview is already composited at 9:16, so do not apply
+        // the raw split-camera chrome (top-half video) while streaming.
+        const splitChrome = useSplit && !publishedPreviewStream;
 
         getLayoutContainers().forEach((container) => {
-            container.classList.toggle('layout-split', useSplit);
+            container.classList.toggle('layout-split', splitChrome);
         });
-        elements.fullscreenView.classList.toggle('layout-split', useSplit);
+        elements.fullscreenView.classList.toggle('layout-split', splitChrome);
+        syncComposedPreviewPresentation();
 
         getOverlayWraps().forEach((wrap) => {
             wrap.title = useSplit ? '' : 'Drag to move';
