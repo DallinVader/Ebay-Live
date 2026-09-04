@@ -8,7 +8,9 @@ export function coverCrop(
     sourceWidth,
     sourceHeight,
     destinationWidth = COMPOSITION_WIDTH,
-    destinationHeight = COMPOSITION_HEIGHT
+    destinationHeight = COMPOSITION_HEIGHT,
+    zoom = 1,
+    offsetY = 0
 ) {
     if (
         sourceWidth <= 0
@@ -19,26 +21,62 @@ export function coverCrop(
         throw new RangeError('Source and destination dimensions must be positive');
     }
 
-    const sourceRatio = sourceWidth / sourceHeight;
-    const destinationRatio = destinationWidth / destinationHeight;
-    let width = sourceWidth;
-    let height = sourceHeight;
+    const zoomFactor = Number(zoom);
+    const clampedZoom = Number.isFinite(zoomFactor) && zoomFactor > 0
+        ? Math.max(0.5, Math.min(4, zoomFactor))
+        : 1;
+    const panY = Number.isFinite(Number(offsetY))
+        ? Math.max(-1, Math.min(1, Number(offsetY)))
+        : 0;
+    const coverScale = Math.max(
+        destinationWidth / sourceWidth,
+        destinationHeight / sourceHeight,
+    );
+    const containScale = Math.min(
+        destinationWidth / sourceWidth,
+        destinationHeight / sourceHeight,
+    );
+    const scale = clampedZoom >= 1
+        ? coverScale * clampedZoom
+        : containScale + (coverScale - containScale) * ((clampedZoom - 0.5) / 0.5);
+    const drawWidth = sourceWidth * scale;
+    const drawHeight = sourceHeight * scale;
 
-    if (sourceRatio > destinationRatio) {
-        width = sourceHeight * destinationRatio;
+    let sx = 0;
+    let sy = 0;
+    let sw = sourceWidth;
+    let sh = sourceHeight;
+    let dx = (destinationWidth - drawWidth) / 2;
+    let dy = (destinationHeight - drawHeight) / 2;
+    let dw = drawWidth;
+    let dh = drawHeight;
+
+    if (drawWidth >= destinationWidth) {
+        sw = destinationWidth / scale;
+        sx = (sourceWidth - sw) / 2;
+        dx = 0;
+        dw = destinationWidth;
+    }
+    if (drawHeight >= destinationHeight) {
+        sh = destinationHeight / scale;
+        const maxSy = Math.max(0, sourceHeight - sh);
+        sy = maxSy * (panY + 1) / 2;
+        dy = 0;
+        dh = destinationHeight;
     } else {
-        height = sourceWidth / destinationRatio;
+        const maxDy = Math.max(0, destinationHeight - dh);
+        dy = maxDy * (panY + 1) / 2;
     }
 
     return Object.freeze({
-        sx: (sourceWidth - width) / 2,
-        sy: (sourceHeight - height) / 2,
-        sw: width,
-        sh: height,
-        dx: 0,
-        dy: 0,
-        dw: destinationWidth,
-        dh: destinationHeight
+        sx,
+        sy,
+        sw,
+        sh,
+        dx,
+        dy,
+        dw,
+        dh,
     });
 }
 
@@ -56,7 +94,7 @@ export function overlayGeometry(
     }
 
     if (layout === 'pip') {
-        const sizePercent = Math.max(10, Math.min(80, Number(options.sizePercent) || 34));
+        const sizePercent = Math.max(10, Math.min(100, Number(options.sizePercent) || 34));
         const centerXPercent = Math.max(0, Math.min(100, Number(options.xPercent) || 78));
         const centerYPercent = Math.max(0, Math.min(100, Number(options.yPercent) || 20));
         const aspectRatio = Number(options.aspectRatio) > 0 ? Number(options.aspectRatio) : 9 / 16;

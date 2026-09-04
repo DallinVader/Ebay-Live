@@ -1,6 +1,6 @@
 import { AdaptiveQualityPolicy } from './stream/adaptive-quality.js?v=20260814i';
 import { StreamAudioPipeline, buildMicConstraints, applyRawMicProcessing } from './stream/audio-pipeline.js?v=20260814i';
-import { PublishSource, detectInsertableVideoSupport } from './stream/publish-source.js?v=20260815b';
+import { PublishSource, detectInsertableVideoSupport } from './stream/publish-source.js?v=20260904f';
 import { WhipSession } from './stream/whip-session.js?v=20260814i';
 
 (function () {
@@ -19,6 +19,10 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
         fullscreenCameraPlaceholder: document.getElementById('fullscreen-camera-placeholder'),
         cameraSelect: document.getElementById('camera-select'),
         mainCameraResolution: document.getElementById('main-camera-resolution'),
+        mainCameraZoom: document.getElementById('main-camera-zoom'),
+        mainCameraZoomValue: document.getElementById('main-camera-zoom-value'),
+        mainCameraOffsetY: document.getElementById('main-camera-offset-y'),
+        mainCameraOffsetYValue: document.getElementById('main-camera-offset-y-value'),
         cameraResolution: document.getElementById('camera-resolution'),
         overlayEnabledToggle: document.getElementById('overlay-enabled-toggle'),
         overlayCameraSelect: document.getElementById('overlay-camera-select'),
@@ -27,6 +31,10 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
         overlayAspect: document.getElementById('overlay-aspect'),
         overlaySize: document.getElementById('overlay-size'),
         overlaySizeValue: document.getElementById('overlay-size-value'),
+        overlayCameraZoom: document.getElementById('overlay-camera-zoom'),
+        overlayCameraZoomValue: document.getElementById('overlay-camera-zoom-value'),
+        overlayCameraOffsetY: document.getElementById('overlay-camera-offset-y'),
+        overlayCameraOffsetYValue: document.getElementById('overlay-camera-offset-y-value'),
         overlayDragHint: document.getElementById('overlay-drag-hint'),
         overlayMirrorToggle: document.getElementById('overlay-mirror-toggle'),
         previewStreamFrame: document.getElementById('preview-stream-frame'),
@@ -155,6 +163,12 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
         '9:16': '9 / 16',
         default: '16 / 9',
     };
+    const CAMERA_ZOOM_MIN = 50;
+    const CAMERA_ZOOM_MAX = 400;
+    const CAMERA_ZOOM_DEFAULT = 100;
+    const CAMERA_OFFSET_Y_MIN = -50;
+    const CAMERA_OFFSET_Y_MAX = 50;
+    const CAMERA_OFFSET_Y_DEFAULT = 0;
 
     let overlayPosition = { x: 85, y: 85 };
     let suppressStreamTap = false;
@@ -608,7 +622,11 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
             return;
         }
 
-        footerKeys.innerHTML = `Press <kbd>Esc</kbd> or <kbd>F</kbd> while fullscreen to return to this console. Press <kbd>${escapeHtml(formatHotkeyLabel(effectHotkey))}</kbd> or tap the screen to burst a graphic. Press <kbd>${escapeHtml(formatHotkeyLabel(soldHotkey))}</kbd> for the SOLD overlay.`;
+        const effectHint = effectHotkey === 'Space'
+            ? 'Tap the screen to burst a graphic'
+            : `Press <kbd>${escapeHtml(formatHotkeyLabel(effectHotkey))}</kbd> or tap the screen to burst a graphic`;
+
+        footerKeys.innerHTML = `Press <kbd>Esc</kbd> or <kbd>F</kbd> while fullscreen to return to this console. Press <kbd>Space</kbd> to swap main and overlay cameras. ${effectHint}. Press <kbd>${escapeHtml(formatHotkeyLabel(soldHotkey))}</kbd> for the SOLD overlay.`;
     }
 
     function setOutputStreamingState(live) {
@@ -690,6 +708,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
             elements.cameraOverlayFullscreen.srcObject = null;
         }
 
+        applyCameraZoom();
     }
 
     function waitForAnimationFrames(count) {
@@ -1101,6 +1120,10 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
             overlayY: overlayPosition.y,
             overlaySize: Number(elements.overlaySize.value),
             overlayAspectRatio: aspectRatio,
+            zoomMain: getCameraZoomFactor(elements.mainCameraZoom),
+            zoomOverlay: getCameraZoomFactor(elements.overlayCameraZoom),
+            offsetYMain: getCameraOffsetYFactor(elements.mainCameraOffsetY),
+            offsetYOverlay: getCameraOffsetYFactor(elements.overlayCameraOffsetY),
         };
     }
 
@@ -1373,6 +1396,210 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
             main: elements.mirrorToggle.checked,
             overlay: mirrored,
         });
+        applyCameraZoom();
+    }
+
+    function clampCameraZoom(value) {
+        const zoom = Number(value);
+        if (!Number.isFinite(zoom)) {
+            return CAMERA_ZOOM_DEFAULT;
+        }
+
+        return Math.max(CAMERA_ZOOM_MIN, Math.min(CAMERA_ZOOM_MAX, Math.round(zoom)));
+    }
+
+    function getCameraZoomFactor(input) {
+        return clampCameraZoom(input?.value) / 100;
+    }
+
+    function clampCameraOffsetY(value) {
+        const offset = Number(value);
+        if (!Number.isFinite(offset)) {
+            return CAMERA_OFFSET_Y_DEFAULT;
+        }
+
+        return Math.max(CAMERA_OFFSET_Y_MIN, Math.min(CAMERA_OFFSET_Y_MAX, Math.round(offset)));
+    }
+
+    function getCameraOffsetYFactor(input) {
+        return clampCameraOffsetY(input?.value) / 50;
+    }
+
+    function formatCameraOffsetYLabel(value) {
+        const offset = clampCameraOffsetY(value);
+        if (offset > 0) {
+            return `+${offset}`;
+        }
+
+        return String(offset);
+    }
+
+    function getOverlayAspectNumber() {
+        const aspectParts = elements.overlayAspect.value.split(':').map(Number);
+        if (aspectParts.length === 2 && aspectParts[1] > 0) {
+            return aspectParts[0] / aspectParts[1];
+        }
+
+        return 16 / 9;
+    }
+
+    function pointerHitsOverlay(frame, clientX, clientY) {
+        if (!elements.overlayEnabledToggle.checked || !elements.overlayCameraSelect.value) {
+            return false;
+        }
+
+        const rect = frame.getBoundingClientRect();
+        if (
+            clientX < rect.left
+            || clientX > rect.right
+            || clientY < rect.top
+            || clientY > rect.bottom
+            || rect.width <= 0
+            || rect.height <= 0
+        ) {
+            return false;
+        }
+
+        const xPercent = ((clientX - rect.left) / rect.width) * 100;
+        const yPercent = ((clientY - rect.top) / rect.height) * 100;
+        if (isSplitOverlayLayout()) {
+            return yPercent >= 50;
+        }
+
+        const overlayWidthPercent = Number(elements.overlaySize.value);
+        const overlayHeightPercent = overlayWidthPercent
+            * (rect.width / rect.height)
+            / getOverlayAspectNumber();
+        return Math.abs(xPercent - overlayPosition.x) <= overlayWidthPercent / 2
+            && Math.abs(yPercent - overlayPosition.y) <= overlayHeightPercent / 2;
+    }
+
+    function getCoverContainRatio(sourceWidth, sourceHeight, destWidth, destHeight) {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || destWidth <= 0 || destHeight <= 0) {
+            return 1;
+        }
+
+        const cover = Math.max(destWidth / sourceWidth, destHeight / sourceHeight);
+        const contain = Math.min(destWidth / sourceWidth, destHeight / sourceHeight);
+        return contain > 0 ? cover / contain : 1;
+    }
+
+    function applyVideoZoomPresentation(video, zoom, offsetY, composed) {
+        const destWidth = video.clientWidth;
+        const destHeight = video.clientHeight;
+        let coverRatio = getCoverContainRatio(
+            video.videoWidth,
+            video.videoHeight,
+            destWidth,
+            destHeight,
+        );
+        if (coverRatio === 1 && !(video.videoWidth > 0) && destWidth > 0 && destHeight > 0) {
+            coverRatio = getCoverContainRatio(16, 9, destWidth, destHeight);
+        }
+        const zoomOut = !composed && zoom < 1;
+        const objectPositionY = composed ? 50 : 50 + (offsetY * 50);
+
+        video.style.setProperty('--camera-zoom', String(composed ? 1 : zoom));
+        video.style.setProperty('--cover-ratio', String(coverRatio));
+        video.style.setProperty('--camera-offset-y', `${objectPositionY}%`);
+        video.classList.toggle('zoom-out', zoomOut);
+    }
+
+    function applyCameraZoom() {
+        const mainZoom = getCameraZoomFactor(elements.mainCameraZoom);
+        const overlayZoom = getCameraZoomFactor(elements.overlayCameraZoom);
+        const mainOffsetY = getCameraOffsetYFactor(elements.mainCameraOffsetY);
+        const overlayOffsetY = getCameraOffsetYFactor(elements.overlayCameraOffsetY);
+        const composed = Boolean(publishedPreviewStream);
+
+        if (elements.mainCameraZoomValue) {
+            elements.mainCameraZoomValue.textContent = `${clampCameraZoom(elements.mainCameraZoom.value)}%`;
+        }
+        if (elements.overlayCameraZoomValue) {
+            elements.overlayCameraZoomValue.textContent = `${clampCameraZoom(elements.overlayCameraZoom.value)}%`;
+        }
+        if (elements.mainCameraOffsetYValue) {
+            elements.mainCameraOffsetYValue.textContent = formatCameraOffsetYLabel(
+                elements.mainCameraOffsetY.value,
+            );
+        }
+        if (elements.overlayCameraOffsetYValue) {
+            elements.overlayCameraOffsetYValue.textContent = formatCameraOffsetYLabel(
+                elements.overlayCameraOffsetY.value,
+            );
+        }
+
+        [elements.cameraPreview, elements.cameraFullscreen].forEach((video) => {
+            applyVideoZoomPresentation(video, mainZoom, mainOffsetY, composed);
+        });
+        [elements.cameraOverlayPreview, elements.cameraOverlayFullscreen].forEach((video) => {
+            applyVideoZoomPresentation(video, overlayZoom, overlayOffsetY, false);
+        });
+
+        activePublishSource?.update({
+            zoomMain: mainZoom,
+            zoomOverlay: overlayZoom,
+            offsetYMain: mainOffsetY,
+            offsetYOverlay: overlayOffsetY,
+        });
+    }
+
+    function adjustCameraZoom(target, deltaY) {
+        if (!deltaY) {
+            return;
+        }
+
+        const input = target === 'overlay' ? elements.overlayCameraZoom : elements.mainCameraZoom;
+        if (!input || input.disabled) {
+            return;
+        }
+
+        const step = deltaY > 0 ? -10 : 10;
+        input.value = String(clampCameraZoom(Number(input.value) + step));
+        applyCameraZoom();
+        saveStreamSettings();
+    }
+
+    function initCameraZoom() {
+        const videos = [
+            elements.cameraPreview,
+            elements.cameraFullscreen,
+            elements.cameraOverlayPreview,
+            elements.cameraOverlayFullscreen,
+        ];
+        videos.forEach((video) => {
+            video.addEventListener('loadedmetadata', applyCameraZoom);
+            video.addEventListener('resize', applyCameraZoom);
+            video.addEventListener('playing', applyCameraZoom);
+        });
+
+        const resizeObserver = typeof ResizeObserver === 'function'
+            ? new ResizeObserver(() => applyCameraZoom())
+            : null;
+        getLayoutContainers().forEach((frame) => {
+            resizeObserver?.observe(frame);
+            frame.addEventListener('wheel', (event) => {
+                if (event.target.closest?.('.camera-overlay-wrap')) {
+                    return;
+                }
+
+                event.preventDefault();
+                const overlay = pointerHitsOverlay(frame, event.clientX, event.clientY);
+                adjustCameraZoom(overlay ? 'overlay' : 'main', event.deltaY);
+            }, { passive: false });
+        });
+        getOverlayWraps().forEach((wrap) => {
+            resizeObserver?.observe(wrap);
+            wrap.addEventListener('wheel', (event) => {
+                if (wrap.classList.contains('hidden')) {
+                    return;
+                }
+
+                event.preventDefault();
+                event.stopPropagation();
+                adjustCameraZoom('overlay', event.deltaY);
+            }, { passive: false });
+        });
     }
 
     function getOverlayWraps() {
@@ -1497,6 +1724,8 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
         elements.overlayLayout.disabled = !enabled;
         elements.overlayAspect.disabled = !enabled || isSplitOverlayLayout();
         elements.overlaySize.disabled = !enabled || isSplitOverlayLayout();
+        elements.overlayCameraZoom.disabled = !enabled;
+        elements.overlayCameraOffsetY.disabled = !enabled;
         elements.overlayMirrorToggle.disabled = !enabled;
     }
 
@@ -1542,6 +1771,10 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
             overlayX: overlayPosition.x,
             overlayY: overlayPosition.y,
             overlayMirror: elements.overlayMirrorToggle.checked,
+            mainCameraZoom: elements.mainCameraZoom.value,
+            mainCameraOffsetY: elements.mainCameraOffsetY.value,
+            overlayCameraZoom: elements.overlayCameraZoom.value,
+            overlayCameraOffsetY: elements.overlayCameraOffsetY.value,
         };
 
         localStorage.setItem(STREAM_SETTINGS_KEY, JSON.stringify(settings));
@@ -1557,6 +1790,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
                 setOverlayControlsEnabled(elements.overlayEnabledToggle.checked);
                 applyOverlayCameraLayout();
                 applyOverlayCameraMirror();
+                applyCameraZoom();
                 return;
             }
 
@@ -1603,6 +1837,20 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
             if (typeof settings.overlayMirror === 'boolean') {
                 elements.overlayMirrorToggle.checked = settings.overlayMirror;
             }
+            if (settings.mainCameraZoom) {
+                elements.mainCameraZoom.value = String(clampCameraZoom(settings.mainCameraZoom));
+            }
+            if (settings.mainCameraOffsetY !== undefined) {
+                elements.mainCameraOffsetY.value = String(clampCameraOffsetY(settings.mainCameraOffsetY));
+            }
+            if (settings.overlayCameraZoom) {
+                elements.overlayCameraZoom.value = String(clampCameraZoom(settings.overlayCameraZoom));
+            }
+            if (settings.overlayCameraOffsetY !== undefined) {
+                elements.overlayCameraOffsetY.value = String(
+                    clampCameraOffsetY(settings.overlayCameraOffsetY),
+                );
+            }
             if (settings.overlayCameraId) {
                 elements.overlayCameraSelect.dataset.savedCameraId = settings.overlayCameraId;
             }
@@ -1619,6 +1867,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
         setOverlayControlsEnabled(elements.overlayEnabledToggle.checked);
         applyOverlayCameraLayout();
         applyOverlayCameraMirror();
+        applyCameraZoom();
     }
 
     function populateOverlayCameraSelect() {
@@ -1739,6 +1988,10 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
                 overlayAspectRatio: aspectParts.length === 2
                     ? aspectParts[0] / aspectParts[1]
                     : 16 / 9,
+                zoomMain: getCameraZoomFactor(elements.mainCameraZoom),
+                zoomOverlay: getCameraZoomFactor(elements.overlayCameraZoom),
+                offsetYMain: getCameraOffsetYFactor(elements.mainCameraOffsetY),
+                offsetYOverlay: getCameraOffsetYFactor(elements.overlayCameraOffsetY),
             });
         }
         saveStreamSettings();
@@ -1862,6 +2115,88 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
         const run = cameraSwapQueue.then(work);
         cameraSwapQueue = run.then(() => undefined, () => undefined);
         return run;
+    }
+
+    function canSwapMainAndOverlayCameras() {
+        return Boolean(
+            elements.overlayEnabledToggle.checked
+            && elements.cameraSelect.value
+            && elements.overlayCameraSelect.value
+            && elements.cameraSelect.value !== elements.overlayCameraSelect.value
+            && !isOutputStarting
+        );
+    }
+
+    async function swapMainAndOverlayCameras() {
+        if (!canSwapMainAndOverlayCameras()) {
+            return;
+        }
+
+        const mainId = elements.cameraSelect.value;
+        const overlayId = elements.overlayCameraSelect.value;
+
+        await queueCameraSwap(async () => {
+            if (
+                !elements.overlayEnabledToggle.checked
+                || elements.cameraSelect.value !== mainId
+                || elements.overlayCameraSelect.value !== overlayId
+                || isOutputStarting
+            ) {
+                return;
+            }
+
+            elements.cameraSelect.value = overlayId;
+            elements.overlayCameraSelect.dataset.savedCameraId = mainId;
+            populateOverlayCameraSelect();
+
+            const mainMirror = elements.mirrorToggle.checked;
+            const overlayMirror = elements.overlayMirrorToggle.checked;
+            if (mainMirror !== overlayMirror) {
+                elements.mirrorToggle.checked = overlayMirror;
+                elements.overlayMirrorToggle.checked = mainMirror;
+            }
+
+            // Keep main/overlay zoom levels as-is when swapping cameras.
+            applyCameraZoom();
+            saveStreamSettings();
+
+            const mainVideo = mediaStream?.getVideoTracks()[0] || null;
+            const overlayVideo = overlayMediaStream?.getVideoTracks()[0] || null;
+
+            if (mainVideo && overlayVideo && mainVideo !== overlayVideo) {
+                mediaStream.removeTrack(mainVideo);
+                mediaStream.addTrack(overlayVideo);
+                overlayMediaStream = new MediaStream([mainVideo]);
+
+                if (syntheticMainTrack === mainVideo) {
+                    syntheticMainTrack = overlayVideo;
+                }
+
+                if (activePublishSource) {
+                    activePublishSource.replaceOverlay(null);
+                    activePublishSource.replaceMain(overlayVideo);
+                    activePublishSource.replaceOverlay(mainVideo);
+                    activePublishSource.setLayout(elements.overlayLayout.value);
+                }
+
+                syncStreamVideoBindings();
+                syncFullscreenState();
+                return;
+            }
+
+            if (isOutputStreaming) {
+                await hotSwapMainCamera();
+                if (isOutputStreaming && elements.overlayEnabledToggle.checked) {
+                    await hotSwapOverlayCamera();
+                }
+                syncFullscreenState();
+                return;
+            }
+
+            await startStream(elements.cameraSelect.value || null, getMicDeviceId());
+            await startOverlayStream(elements.overlayCameraSelect.value);
+            syncFullscreenState();
+        });
     }
 
     function videoDeviceIdFrom(streamOrTrack) {
@@ -3954,6 +4289,16 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
             }
         }
 
+        if (
+            event.code === 'Space'
+            && !event.repeat
+            && canSwapMainAndOverlayCameras()
+        ) {
+            event.preventDefault();
+            void swapMainAndOverlayCameras();
+            return;
+        }
+
         if (event.code === effectHotkey && !event.repeat) {
             event.preventDefault();
             triggerEffect();
@@ -3979,6 +4324,22 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
     elements.overlayLayout.addEventListener('change', updateOverlayLayoutSettings);
     elements.overlayAspect.addEventListener('change', updateOverlayLayoutSettings);
     elements.overlaySize.addEventListener('input', updateOverlayLayoutSettings);
+    elements.overlayCameraZoom.addEventListener('input', () => {
+        applyCameraZoom();
+        saveStreamSettings();
+    });
+    elements.overlayCameraOffsetY.addEventListener('input', () => {
+        applyCameraZoom();
+        saveStreamSettings();
+    });
+    elements.mainCameraZoom.addEventListener('input', () => {
+        applyCameraZoom();
+        saveStreamSettings();
+    });
+    elements.mainCameraOffsetY.addEventListener('input', () => {
+        applyCameraZoom();
+        saveStreamSettings();
+    });
     elements.overlayMirrorToggle.addEventListener('change', updateOverlayLayoutSettings);
     elements.streamUrl.addEventListener('change', saveStreamOutputSettings);
     elements.streamKey.addEventListener('change', saveStreamOutputSettings);
@@ -3999,6 +4360,7 @@ import { WhipSession } from './stream/whip-session.js?v=20260814i';
         void toggleMuteLocalAudio();
     });
     initOverlayDrag();
+    initCameraZoom();
     initStreamTap();
     elements.fullscreenBtn.addEventListener('click', enterFullscreen);
     elements.assetResetBtn.addEventListener('click', () => {

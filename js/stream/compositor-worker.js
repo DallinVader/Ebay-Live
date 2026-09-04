@@ -10,7 +10,7 @@ import {
     soldBannerGeometry,
     soldValues,
     timelineProgress
-} from './composition-math.js?v=20260811a';
+} from './composition-math.js?v=20260904f';
 
 const scope = globalThis;
 let canvas = null;
@@ -35,6 +35,10 @@ let state = Object.freeze({
     overlayY: 20,
     overlaySize: 34,
     overlayAspectRatio: 9 / 16,
+    zoomMain: 1,
+    zoomOverlay: 1,
+    offsetYMain: 0,
+    offsetYOverlay: 0,
     effect: null,
     sold: null
 });
@@ -112,14 +116,21 @@ function replaceInput(slot, readable) {
     void pumpFrames(reader, slot, pumpId);
 }
 
-function drawFrame(frame, rectangle, mirror) {
+function drawFrame(frame, rectangle, mirror, zoom = 1, offsetY = 0) {
     if (!frame || !rectangle) {
         return;
     }
 
     const sourceWidth = frame.displayWidth || frame.codedWidth;
     const sourceHeight = frame.displayHeight || frame.codedHeight;
-    const crop = coverCrop(sourceWidth, sourceHeight, rectangle.width, rectangle.height);
+    const crop = coverCrop(
+        sourceWidth,
+        sourceHeight,
+        rectangle.width,
+        rectangle.height,
+        zoom,
+        offsetY
+    );
 
     context.save();
     context.beginPath();
@@ -135,10 +146,10 @@ function drawFrame(frame, rectangle, mirror) {
         crop.sy,
         crop.sw,
         crop.sh,
-        rectangle.x,
-        rectangle.y,
-        rectangle.width,
-        rectangle.height
+        rectangle.x + crop.dx,
+        rectangle.y + crop.dy,
+        crop.dw,
+        crop.dh
     );
     context.restore();
 }
@@ -243,8 +254,8 @@ async function renderAt(deadline) {
         sizePercent: state.overlaySize,
         aspectRatio: state.overlayAspectRatio
     });
-    drawFrame(mainFrame, geometry.main, state.mirrorMain);
-    drawFrame(overlayFrame, geometry.overlay, state.mirrorOverlay);
+    drawFrame(mainFrame, geometry.main, state.mirrorMain, state.zoomMain, state.offsetYMain);
+    drawFrame(overlayFrame, geometry.overlay, state.mirrorOverlay, state.zoomOverlay, state.offsetYOverlay);
     drawEffect(deadline);
     drawSold(deadline);
     drawLiveBadge();

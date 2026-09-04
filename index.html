@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>eBay Live — Stream Console</title>
-    <link rel="stylesheet" href="css/styles.css?v=20260815c">
+    <link rel="stylesheet" href="css/styles.css?v=20260904f">
 </head>
 <body>
     <div id="app">
@@ -60,6 +60,24 @@
                             <option value="medium" selected>Medium — 1280×720</option>
                             <option value="high">High — 1920×1080</option>
                         </select>
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="main-camera-zoom">
+                            Camera zoom
+                            <span id="main-camera-zoom-value" class="value-label">100%</span>
+                        </label>
+                        <input type="range" id="main-camera-zoom" min="50" max="400" value="100">
+                        <p class="field-hint">Scroll on the preview to zoom in or out.</p>
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="main-camera-offset-y">
+                            Camera Y offset
+                            <span id="main-camera-offset-y-value" class="value-label">0</span>
+                        </label>
+                        <input type="range" id="main-camera-offset-y" min="-50" max="50" value="0">
+                        <p class="field-hint">Negative moves the frame up; positive moves it down.</p>
                     </div>
 
                     <div class="setting-group">
@@ -122,10 +140,26 @@
                                 Overlay size
                                 <span id="overlay-size-value" class="value-label">25%</span>
                             </label>
-                            <input type="range" id="overlay-size" min="15" max="45" value="25" disabled>
+                            <input type="range" id="overlay-size" min="15" max="100" value="25" disabled>
                         </div>
 
-                        <p id="overlay-drag-hint" class="field-hint">Drag the overlay in preview or fullscreen to move it anywhere.</p>
+                        <div class="setting-group">
+                            <label for="overlay-camera-zoom">
+                                Overlay zoom
+                                <span id="overlay-camera-zoom-value" class="value-label">100%</span>
+                            </label>
+                            <input type="range" id="overlay-camera-zoom" min="50" max="400" value="100" disabled>
+                        </div>
+
+                        <div class="setting-group">
+                            <label for="overlay-camera-offset-y">
+                                Overlay Y offset
+                                <span id="overlay-camera-offset-y-value" class="value-label">0</span>
+                            </label>
+                            <input type="range" id="overlay-camera-offset-y" min="-50" max="50" value="0" disabled>
+                        </div>
+
+                        <p id="overlay-drag-hint" class="field-hint">Drag the overlay in preview or fullscreen to move it. Scroll on a camera to zoom.</p>
 
                         <div class="setting-row">
                             <label class="toggle-label" for="overlay-mirror-toggle">
@@ -384,7 +418,7 @@
             </main>
 
             <footer class="console-footer">
-                <p id="footer-hotkey-hint">Press <kbd>Esc</kbd> or <kbd>F</kbd> while fullscreen to return to this console. Press <kbd>Space</kbd> or tap the screen to burst a graphic. Press <kbd>S</kbd> for the SOLD overlay.</p>
+                <p id="footer-hotkey-hint">Press <kbd>Esc</kbd> or <kbd>F</kbd> while fullscreen to return to this console. Press <kbd>Space</kbd> to swap main and overlay cameras. Tap the screen to burst a graphic. Press <kbd>S</kbd> for the SOLD overlay.</p>
             </footer>
         </div>
 
@@ -408,6 +442,6 @@
 
     <audio id="music-player"></audio>
 
-    <script type="module" src="js/app.js?v=20260815c"></script>
+    <script type="module" src="js/app.js?v=20260904f"></script>
 </body>
 </html>

@@ -193,10 +193,21 @@ body {
 }
 
 .stream-frame .main-camera {
+    --camera-zoom: 1;
+    --cover-ratio: 1;
+    --camera-offset-y: 50%;
     width: 100%;
     height: 100%;
     object-fit: cover;
+    object-position: 50% var(--camera-offset-y);
     pointer-events: none;
+    transform: scale(var(--camera-zoom));
+}
+
+.stream-frame .main-camera.zoom-out,
+.stream-frame .overlay-camera.zoom-out {
+    object-fit: contain;
+    transform: scale(calc(1 + (var(--cover-ratio) - 1) * ((var(--camera-zoom) - 0.5) / 0.5)));
 }
 
 .preview-wrapper .stream-frame.layout-split {
@@ -227,6 +238,8 @@ body {
     width: 100%;
     height: 100%;
     object-fit: fill;
+    object-position: 50% 50%;
+    transform: none;
 }
 
 .camera-overlay-wrap {
@@ -235,6 +248,8 @@ body {
     left: var(--overlay-x, 85%);
     top: var(--overlay-y, 85%);
     width: var(--overlay-size, 25%);
+    max-width: 100%;
+    max-height: 100%;
     aspect-ratio: var(--overlay-aspect-ratio, 9 / 16);
     transform: translate(-50%, -50%);
     border: 2px solid rgba(255, 255, 255, 0.85);
@@ -252,10 +267,15 @@ body {
 }
 
 .overlay-camera {
+    --camera-zoom: 1;
+    --cover-ratio: 1;
+    --camera-offset-y: 50%;
     width: 100%;
     height: 100%;
     object-fit: cover;
+    object-position: 50% var(--camera-offset-y);
     pointer-events: none;
+    transform: scale(var(--camera-zoom));
 }
 
 .fullscreen-view .camera-overlay-wrap {
@@ -293,8 +313,11 @@ body {
     display: block;
 }
 
-.fullscreen-view.layout-split .main-camera {
-    object-fit: cover;
+.layout-split .main-camera.zoom-out,
+.layout-split .overlay-camera.zoom-out,
+.fullscreen-view .main-camera.zoom-out,
+.fullscreen-view .overlay-camera.zoom-out {
+    object-fit: contain;
 }
 
 .fullscreen-placeholder {
@@ -718,31 +741,68 @@ kbd {
     width: 100%;
     height: 100%;
     object-fit: fill;
+    transform: none;
 }
 
 .fullscreen-view .main-camera {
     width: 100%;
     height: 100%;
     object-fit: cover;
-    transform: translateZ(0);
+    transform: translateZ(0) scale(var(--camera-zoom, 1));
     backface-visibility: hidden;
 }
 
 .fullscreen-view.composed-preview .main-camera {
     object-fit: fill;
+    transform: none;
 }
 
 .fullscreen-view .overlay-camera {
-    transform: translateZ(0);
+    transform: translateZ(0) scale(var(--camera-zoom, 1));
     backface-visibility: hidden;
 }
 
 .main-camera.mirrored {
-    transform: scaleX(-1);
+    transform: scale(calc(var(--camera-zoom, 1) * -1), var(--camera-zoom, 1));
 }
 
 .overlay-camera.mirrored {
-    transform: scaleX(-1);
+    transform: scale(calc(var(--camera-zoom, 1) * -1), var(--camera-zoom, 1));
+}
+
+.main-camera.zoom-out {
+    transform: scale(calc(1 + (var(--cover-ratio) - 1) * ((var(--camera-zoom) - 0.5) / 0.5)));
+}
+
+.overlay-camera.zoom-out {
+    transform: scale(calc(1 + (var(--cover-ratio) - 1) * ((var(--camera-zoom) - 0.5) / 0.5)));
+}
+
+.main-camera.mirrored.zoom-out,
+.overlay-camera.mirrored.zoom-out {
+    transform: scale(
+        calc((1 + (var(--cover-ratio) - 1) * ((var(--camera-zoom) - 0.5) / 0.5)) * -1),
+        calc(1 + (var(--cover-ratio) - 1) * ((var(--camera-zoom) - 0.5) / 0.5))
+    );
+}
+
+.fullscreen-view .main-camera.mirrored,
+.fullscreen-view .overlay-camera.mirrored {
+    transform: translateZ(0) scale(calc(var(--camera-zoom, 1) * -1), var(--camera-zoom, 1));
+}
+
+.fullscreen-view .main-camera.zoom-out,
+.fullscreen-view .overlay-camera.zoom-out {
+    object-fit: contain;
+    transform: translateZ(0) scale(calc(1 + (var(--cover-ratio) - 1) * ((var(--camera-zoom) - 0.5) / 0.5)));
+}
+
+.fullscreen-view .main-camera.mirrored.zoom-out,
+.fullscreen-view .overlay-camera.mirrored.zoom-out {
+    transform: translateZ(0) scale(
+        calc((1 + (var(--cover-ratio) - 1) * ((var(--camera-zoom) - 0.5) / 0.5)) * -1),
+        calc(1 + (var(--cover-ratio) - 1) * ((var(--camera-zoom) - 0.5) / 0.5))
+    );
 }
 
 .live-overlay {

@@ -25,6 +25,55 @@ test('cover crop centers landscape source into portrait output', () => {
     });
 });
 
+test('cover crop zooms in by shrinking the centered source window', () => {
+    assert.deepEqual(coverCrop(1920, 1080, 720, 1280, 2), {
+        sx: 808.125,
+        sy: 270,
+        sw: 303.75,
+        sh: 540,
+        dx: 0,
+        dy: 0,
+        dw: 720,
+        dh: 1280
+    });
+});
+
+test('cover crop zooms out to contain the full camera at 50%', () => {
+    assert.deepEqual(coverCrop(1920, 1080, 720, 1280, 0.5), {
+        sx: 0,
+        sy: 0,
+        sw: 1920,
+        sh: 1080,
+        dx: 0,
+        dy: 437.5,
+        dw: 720,
+        dh: 405
+    });
+});
+
+test('cover crop Y offset pans zoomed-in crop and letterboxed frame', () => {
+    assert.deepEqual(coverCrop(1920, 1080, 720, 1280, 2, 1), {
+        sx: 808.125,
+        sy: 540,
+        sw: 303.75,
+        sh: 540,
+        dx: 0,
+        dy: 0,
+        dw: 720,
+        dh: 1280
+    });
+    assert.deepEqual(coverCrop(1920, 1080, 720, 1280, 0.5, -1), {
+        sx: 0,
+        sy: 0,
+        sw: 1920,
+        sh: 1080,
+        dx: 0,
+        dy: 0,
+        dw: 720,
+        dh: 405
+    });
+});
+
 test('overlay geometry is deterministic for pip and split layouts', () => {
     const pip = overlayGeometry('pip');
     assert.deepEqual(pip.main, { x: 0, y: 0, width: 720, height: 1280 });
@@ -52,6 +101,21 @@ test('PiP geometry follows existing size and position controls', () => {
         y: 480,
         width: 180,
         height: 320
+    });
+});
+
+test('PiP overlay can fill the full 9:16 frame at 100% size', () => {
+    const pip = overlayGeometry('pip', 720, 1280, {
+        xPercent: 85,
+        yPercent: 85,
+        sizePercent: 100,
+        aspectRatio: 9 / 16
+    });
+    assert.deepEqual(pip.overlay, {
+        x: 0,
+        y: 0,
+        width: 720,
+        height: 1280
     });
 });
 
